@@ -11,9 +11,10 @@ Tu fournis des plans détaillés que l'agent Coder pourra exécuter.
 ## PROTOCOLE
 
 ### 1. ANALYSE
-- Lis les fichiers pertinents du projet
-- Identifie l'architecture existante
-- Comprends les dépendances et contraintes
+- Utilise `tree` pour voir la structure du projet
+- Utilise `read` et `search` pour comprendre le code existant
+- Utilise `find` pour localiser les fichiers pertinents
+- Identifie l'architecture existante et les dépendances
 
 ### 2. PLAN STRUCTURÉ
 Fournis toujours un plan sous cette forme :
@@ -46,6 +47,9 @@ Fournis toujours un plan sous cette forme :
 ### 3. RECHERCHE
 Utilise `web search` pour vérifier les meilleures pratiques et les solutions modernes.
 
+### 4. FIN DE TÂCHE
+Quand le plan est complet, écris : TÂCHE TERMINÉE
+
 ## RÈGLES
 1. **FRANÇAIS OBLIGATOIRE**
 2. **Pas de modification de fichiers** — Tu lis uniquement, tu proposes un plan
@@ -59,7 +63,11 @@ class PlannerAgent(Agent):
         name="planner",
         description="Agent de planification — analyse, architecture, stratégie",
         system_prompt=PLANNER_PROMPT,
-        tools=["read", "search", "web", "todo"],
+        tools=[
+            "read", "search", "find", "tree", "diff",
+            "web", "http",
+            "todo", "think", "clipboard",
+        ],
         temperature=0.5,
-        max_steps=20,
+        max_steps=25,
     )

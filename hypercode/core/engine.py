@@ -15,52 +15,80 @@ from hypercode.config import load_config
 
 TOOL_INSTRUCTIONS_TEMPLATE = (
     "\n\n---\n"
-    "# SYSTÈME D'OUTILS\n\n"
-    "IMPORTANT : Pour exécuter des actions (créer des fichiers, lancer des commandes, etc.), "
-    "tu DOIS utiliser les outils ci-dessous. Tu ne peux PAS juste écrire du code dans ta réponse — "
-    "tu dois l'envoyer via l'outil `write` ou `bash`.\n\n"
-    "## Format d'appel d'outil\n\n"
-    "Pour appeler un outil, écris EXACTEMENT ce format dans ta réponse :\n\n"
-    "```\n"
+    "# SYSTÈME D'OUTILS — LECTURE OBLIGATOIRE\n\n"
+    "⚠️ ATTENTION : Tu ne peux PAS agir sans utiliser les outils. "
+    "Écrire du code dans ta réponse NE FAIT RIEN. "
+    "Seuls les blocs <tool> ci-dessous permettent de créer des fichiers, exécuter des commandes, etc.\n\n"
+    "## Comment utiliser un outil\n\n"
+    "Écris ce format EXACT (pas dans un bloc de code markdown) :\n\n"
     '<tool name="nom_outil">\n'
-    '{{"parametre": "valeur"}}\n'
-    "</tool>\n"
-    "```\n\n"
-    "## Exemples concrets\n\n"
-    "Créer un fichier :\n"
-    "```\n"
+    '{{"param": "valeur"}}\n'
+    "</tool>\n\n"
+    "## Exemples — COPIE CE FORMAT\n\n"
+    "Pour créer un fichier :\n\n"
     '<tool name="write">\n'
-    '{{"file_path": "/workspace/index.html", "content": "<html>...</html>"}}\n'
-    "</tool>\n"
-    "```\n\n"
-    "Exécuter une commande :\n"
-    "```\n"
+    '{{"file_path": "/workspace/index.html", "content": "<!DOCTYPE html>\\n<html>\\n<body>Hello</body>\\n</html>"}}\n'
+    "</tool>\n\n"
+    "Pour exécuter une commande :\n\n"
     '<tool name="bash">\n'
-    '{{"command": "python3 -m http.server 8888"}}\n'
-    "</tool>\n"
-    "```\n\n"
-    "Lire un fichier :\n"
-    "```\n"
+    '{{"command": "cd /workspace && python3 -m http.server 8888"}}\n'
+    "</tool>\n\n"
+    "Pour lire un fichier :\n\n"
     '<tool name="read">\n'
     '{{"file_path": "/workspace/app.py"}}\n'
-    "</tool>\n"
-    "```\n\n"
-    "Chercher sur internet :\n"
-    "```\n"
+    "</tool>\n\n"
+    "Pour chercher sur le web :\n\n"
     '<tool name="web">\n'
-    '{{"action": "search", "query": "python flask tutorial"}}\n'
-    "</tool>\n"
-    "```\n\n"
-    "## Outils disponibles\n\n"
+    '{{"action": "search", "query": "css glassmorphism tutorial 2025"}}\n'
+    "</tool>\n\n"
+    "Pour voir l'arborescence :\n\n"
+    '<tool name="tree">\n'
+    '{{"path": "/workspace"}}\n'
+    "</tool>\n\n"
+    "Pour créer PLUSIEURS fichiers d'un coup :\n\n"
+    '<tool name="multiwrite">\n'
+    '{{"files": [{{"path": "/workspace/a.txt", "content": "aaa"}}, {{"path": "/workspace/b.txt", "content": "bbb"}}]}}\n'
+    "</tool>\n\n"
+    "## Tous les outils disponibles\n\n"
     "{tool_descriptions}\n\n"
-    "## Règles critiques\n"
-    "1. TOUJOURS utiliser les outils pour agir. Ne jamais juste décrire ce que tu ferais.\n"
-    "2. Tu peux mettre PLUSIEURS blocs <tool> dans une même réponse.\n"
-    "3. Après chaque outil exécuté, tu recevras le résultat et tu pourras continuer.\n"
-    "4. Quand tu as TERMINÉ ta tâche, écris : TÂCHE TERMINÉE\n"
-    "5. Tant que tu n'as pas écrit TÂCHE TERMINÉE, continue à travailler.\n"
+    "## Règles ABSOLUES\n"
+    "1. CHAQUE action = un bloc <tool>. Pas de bloc = pas d'action.\n"
+    "2. Tu peux mettre PLUSIEURS <tool> dans une même réponse.\n"
+    "3. N'encadre PAS les blocs <tool> dans des balises markdown ``` — écris-les directement.\n"
+    "4. Quand ta tâche est TERMINÉE, écris le mot exact : TÂCHE TERMINÉE\n"
+    "5. Tant que tu n'as PAS écrit TÂCHE TERMINÉE, tu DOIS continuer à travailler en utilisant les outils.\n"
     "---\n"
 )
+
+# Messages de rappel quand le modèle n'utilise pas les outils
+NUDGE_MESSAGES = [
+    (
+        "⚠️ Tu n'as pas utilisé d'outil dans ta dernière réponse. "
+        "Tu DOIS utiliser les blocs <tool> pour agir. Voici un rappel :\n\n"
+        "Pour créer un fichier, écris directement (PAS dans un bloc ```) :\n\n"
+        '<tool name="write">\n'
+        '{"file_path": "/chemin/fichier", "content": "contenu du fichier"}\n'
+        "</tool>\n\n"
+        "Pour exécuter une commande :\n\n"
+        '<tool name="bash">\n'
+        '{"command": "ta commande ici"}\n'
+        "</tool>\n\n"
+        "Continue ta tâche en utilisant ces outils MAINTENANT."
+    ),
+    (
+        "RAPPEL URGENT : Ta réponse précédente ne contenait aucun outil. "
+        "Tu DOIS utiliser le format <tool name=\"...\"> pour agir. "
+        "Quelle est la PROCHAINE action concrète ? Écris un bloc <tool> maintenant. "
+        "Si tu as terminé, écris : TÂCHE TERMINÉE"
+    ),
+    (
+        "DERNIÈRE CHANCE : Utilise un outil <tool> ou écris TÂCHE TERMINÉE. "
+        "Exemple : <tool name=\"bash\">\n{\"command\": \"ls\"}\n</tool>"
+    ),
+    (
+        "Tu dois agir avec <tool> ou dire TÂCHE TERMINÉE. Rien d'autre ne fonctionne."
+    ),
+]
 
 
 def build_tool_descriptions() -> str:
@@ -80,27 +108,26 @@ def build_tool_descriptions() -> str:
 
 
 def parse_tool_calls(text: str) -> list[ToolCall]:
-    """Parse les appels d'outils depuis le texte de la réponse."""
+    """Parse les appels d'outils depuis le texte — très robuste."""
     tool_calls = []
-    # Pattern pour matcher <tool name="...">...</tool> (avec ou sans backticks autour)
+
+    # Étape 1 : Retirer les balises markdown ``` qui entourent des blocs <tool>
+    # Le modèle fait souvent : ```\n<tool name="bash">...\n</tool>\n```
+    cleaned = re.sub(r'```[a-z]*\s*\n?(<tool\s+name=)', r'\1', text, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(</tool>)\s*\n?```', r'\1', cleaned, flags=re.IGNORECASE)
+
+    # Étape 2 : Parser les blocs <tool>
     pattern = r'<tool\s+name=["\']([^"\']+)["\']>\s*(.*?)\s*</tool>'
-    matches = re.finditer(pattern, text, re.DOTALL)
+    matches = re.finditer(pattern, cleaned, re.DOTALL)
 
     for i, match in enumerate(matches):
         name = match.group(1).strip()
         args_str = match.group(2).strip()
 
-        try:
-            arguments = json.loads(args_str)
-        except json.JSONDecodeError:
-            try:
-                json_match = re.search(r'\{.*\}', args_str, re.DOTALL)
-                if json_match:
-                    arguments = json.loads(json_match.group(0))
-                else:
-                    arguments = {"_raw": args_str}
-            except Exception:
-                arguments = {"_raw": args_str}
+        # Nettoyer les backticks qui traînent dans le JSON
+        args_str = args_str.strip('`').strip()
+
+        arguments = _parse_json_robust(args_str)
 
         tool_calls.append(ToolCall(
             id=f"call_{i}",
@@ -111,9 +138,37 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
     return tool_calls
 
 
+def _parse_json_robust(text: str) -> dict:
+    """Parse du JSON de façon très tolérante."""
+    # Essai direct
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Extraire le premier objet JSON { ... }
+    try:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Essayer de réparer : guillemets simples → doubles
+    try:
+        fixed = text.replace("'", '"')
+        return json.loads(fixed)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    return {"_raw": text}
+
+
 def strip_tool_calls(text: str) -> str:
     """Retire les blocs <tool> du texte pour l'affichage."""
-    cleaned = re.sub(r'```\s*\n*<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>\s*\n*```', '', text, flags=re.DOTALL)
+    # D'abord retirer les blocs <tool> entourés de ```
+    cleaned = re.sub(r'```[a-z]*\s*\n?\s*<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>\s*\n?\s*```', '', text, flags=re.DOTALL)
+    # Puis retirer les blocs <tool> seuls
     cleaned = re.sub(r'<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>', '', cleaned, flags=re.DOTALL)
     return cleaned.strip()
 
@@ -124,7 +179,9 @@ def is_task_complete(text: str) -> bool:
         "TÂCHE TERMINÉE",
         "TACHE TERMINEE",
         "TÂCHE COMPLÈTE",
+        "TACHE COMPLETE",
         "MISSION ACCOMPLIE",
+        "MISSION TERMINÉE",
     ]
     upper = text.upper()
     return any(m.upper() in upper for m in markers)
@@ -169,6 +226,7 @@ class Engine:
         self._step = 0
         self._max_steps = 80
         self._consecutive_no_tools = 0
+        self._max_no_tools = len(NUDGE_MESSAGES) + 1  # 5 chances avant d'abandonner
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -205,6 +263,7 @@ class Engine:
 
             elapsed = time.time() - start_time
 
+            # Parser les tool calls (robuste : gère les ``` autour)
             tool_calls = parse_tool_calls(response.content)
             display_text = strip_tool_calls(response.content)
 
@@ -227,26 +286,30 @@ class Engine:
                     results.append(f"[{tool_call.name}] {result}")
 
                 combined_results = "\n---\n".join(results)
-                self.session.add_message("user", f"Résultats des outils :\n{combined_results}\n\nContinue ton travail. Utilise les outils pour la prochaine étape.")
+                self.session.add_message("user",
+                    f"Résultats des outils :\n{combined_results}\n\n"
+                    "Bien ! Continue ton travail avec la prochaine étape. "
+                    "Utilise les outils <tool> pour chaque action."
+                )
             else:
                 # Pas de tool calls détectés
-                self._consecutive_no_tools += 1
-
-                # Vérifier si la tâche est terminée
                 if is_task_complete(response.content):
                     self._running = False
-                elif self._consecutive_no_tools >= 3:
-                    # Le modèle ne veut pas utiliser les outils, on arrête
+                    continue
+
+                # Réponse vide ou sans outils
+                self._consecutive_no_tools += 1
+
+                if self._consecutive_no_tools >= self._max_no_tools:
                     self.on_event(EngineEvent("error", {
-                        "message": "L'agent n'utilise pas les outils. Essaie de reformuler ta demande.",
+                        "message": "L'agent ne répond plus avec des outils après plusieurs rappels. Session terminée.",
                     }))
                     self._running = False
                 else:
-                    # Relancer le modèle en lui rappelant d'utiliser les outils
-                    self.session.add_message("user",
-                        "Tu dois utiliser les outils pour agir ! Écris des blocs <tool name=\"...\"> pour créer des fichiers, exécuter des commandes, etc. "
-                        "Ne te contente pas de décrire, EXÉCUTE avec les outils. Continue ton travail."
-                    )
+                    # Envoyer le message de rappel approprié
+                    nudge_idx = min(self._consecutive_no_tools - 1, len(NUDGE_MESSAGES) - 1)
+                    nudge = NUDGE_MESSAGES[nudge_idx]
+                    self.session.add_message("user", nudge)
 
         if self._step >= self._max_steps:
             self.on_event(EngineEvent("error", {
@@ -310,6 +373,7 @@ class Engine:
         self.session.add_message("user", user_message)
         self._running = True
         self._step = 0
+        self._consecutive_no_tools = 0
 
         while self._running and self._step < self._max_steps:
             self._step += 1
@@ -335,6 +399,7 @@ class Engine:
             self.session.add_message("assistant", response.content)
 
             if tool_calls:
+                self._consecutive_no_tools = 0
                 results = []
                 for tool_call in tool_calls:
                     yield EngineEvent("tool_call", {
@@ -345,16 +410,24 @@ class Engine:
                     results.append(f"[{tool_call.name}] {result}")
                     yield EngineEvent("tool_result", {
                         "name": tool_call.name,
-                        "success": "ERREUR" not in result,
+                        "success": "ERREUR" not in result.upper(),
                         "output": result,
                     })
 
                 combined_results = "\n---\n".join(results)
-                self.session.add_message("user", f"Résultats des outils :\n{combined_results}\n\nContinue.")
+                self.session.add_message("user",
+                    f"Résultats des outils :\n{combined_results}\n\nContinue avec la prochaine étape."
+                )
             elif is_task_complete(response.content):
                 self._running = False
             else:
-                self.session.add_message("user", "Utilise les outils <tool> pour agir. Continue.")
+                self._consecutive_no_tools += 1
+                if self._consecutive_no_tools >= self._max_no_tools:
+                    yield EngineEvent("error", {"message": "L'agent ne répond plus avec des outils."})
+                    self._running = False
+                else:
+                    nudge_idx = min(self._consecutive_no_tools - 1, len(NUDGE_MESSAGES) - 1)
+                    self.session.add_message("user", NUDGE_MESSAGES[nudge_idx])
 
         yield EngineEvent("done", {"total_steps": self._step})
         self.session.save()

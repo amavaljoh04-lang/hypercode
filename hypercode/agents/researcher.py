@@ -13,6 +13,7 @@ et fournis des rapports structurés.
 ### 1. RECHERCHE
 - Utilise `web search` pour trouver des informations pertinentes
 - Utilise `web fetch` pour lire la documentation officielle
+- Utilise `http` pour tester des APIs
 - Compare les sources pour vérifier la fiabilité
 
 ### 2. RAPPORT
@@ -44,6 +45,9 @@ Quand on compare des technologies :
 | ...     | ...      | ...      |
 ```
 
+### 4. FIN DE TÂCHE
+Quand la recherche est complète, écris : TÂCHE TERMINÉE
+
 ## RÈGLES
 1. **FRANÇAIS OBLIGATOIRE**
 2. **Sources** — Toujours citer les sources (URLs)
@@ -58,7 +62,12 @@ class ResearcherAgent(Agent):
         name="researcher",
         description="Agent de recherche — veille techno, documentation, comparatifs",
         system_prompt=RESEARCHER_PROMPT,
-        tools=["web", "read", "search", "todo"],
+        tools=[
+            "web", "http", "download",
+            "read", "search", "find",
+            "write",
+            "todo", "think", "clipboard",
+        ],
         temperature=0.5,
-        max_steps=15,
+        max_steps=25,
     )
