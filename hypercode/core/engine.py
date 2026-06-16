@@ -14,20 +14,52 @@ from hypercode.config import load_config
 
 
 TOOL_INSTRUCTIONS_TEMPLATE = (
-    "\n## OUTILS DISPONIBLES\n\n"
-    "Tu peux utiliser des outils en écrivant des blocs <tool> dans ta réponse.\n"
-    "Format EXACT à respecter :\n\n"
-    '<tool name="NOM_OUTIL">\n'
-    '{{"param1": "valeur1", "param2": "valeur2"}}\n'
-    "</tool>\n\n"
-    "### Outils :\n\n"
+    "\n\n---\n"
+    "# SYSTÈME D'OUTILS\n\n"
+    "IMPORTANT : Pour exécuter des actions (créer des fichiers, lancer des commandes, etc.), "
+    "tu DOIS utiliser les outils ci-dessous. Tu ne peux PAS juste écrire du code dans ta réponse — "
+    "tu dois l'envoyer via l'outil `write` ou `bash`.\n\n"
+    "## Format d'appel d'outil\n\n"
+    "Pour appeler un outil, écris EXACTEMENT ce format dans ta réponse :\n\n"
+    "```\n"
+    '<tool name="nom_outil">\n'
+    '{{"parametre": "valeur"}}\n'
+    "</tool>\n"
+    "```\n\n"
+    "## Exemples concrets\n\n"
+    "Créer un fichier :\n"
+    "```\n"
+    '<tool name="write">\n'
+    '{{"file_path": "/workspace/index.html", "content": "<html>...</html>"}}\n'
+    "</tool>\n"
+    "```\n\n"
+    "Exécuter une commande :\n"
+    "```\n"
+    '<tool name="bash">\n'
+    '{{"command": "python3 -m http.server 8888"}}\n'
+    "</tool>\n"
+    "```\n\n"
+    "Lire un fichier :\n"
+    "```\n"
+    '<tool name="read">\n'
+    '{{"file_path": "/workspace/app.py"}}\n'
+    "</tool>\n"
+    "```\n\n"
+    "Chercher sur internet :\n"
+    "```\n"
+    '<tool name="web">\n'
+    '{{"action": "search", "query": "python flask tutorial"}}\n'
+    "</tool>\n"
+    "```\n\n"
+    "## Outils disponibles\n\n"
     "{tool_descriptions}\n\n"
-    "## RÈGLES D'UTILISATION DES OUTILS\n"
-    "- Utilise UN SEUL outil par bloc <tool>\n"
-    "- Tu peux utiliser PLUSIEURS outils dans une même réponse\n"
-    "- Après chaque outil, tu recevras le résultat et tu pourras continuer\n"
-    "- Les paramètres sont en JSON\n"
-    "- N'invente PAS de paramètres qui n'existent pas\n"
+    "## Règles critiques\n"
+    "1. TOUJOURS utiliser les outils pour agir. Ne jamais juste décrire ce que tu ferais.\n"
+    "2. Tu peux mettre PLUSIEURS blocs <tool> dans une même réponse.\n"
+    "3. Après chaque outil exécuté, tu recevras le résultat et tu pourras continuer.\n"
+    "4. Quand tu as TERMINÉ ta tâche, écris : TÂCHE TERMINÉE\n"
+    "5. Tant que tu n'as pas écrit TÂCHE TERMINÉE, continue à travailler.\n"
+    "---\n"
 )
 
 
@@ -50,7 +82,7 @@ def build_tool_descriptions() -> str:
 def parse_tool_calls(text: str) -> list[ToolCall]:
     """Parse les appels d'outils depuis le texte de la réponse."""
     tool_calls = []
-    # Pattern pour matcher <tool name="...">...</tool>
+    # Pattern pour matcher <tool name="...">...</tool> (avec ou sans backticks autour)
     pattern = r'<tool\s+name=["\']([^"\']+)["\']>\s*(.*?)\s*</tool>'
     matches = re.finditer(pattern, text, re.DOTALL)
 
@@ -61,9 +93,7 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
         try:
             arguments = json.loads(args_str)
         except json.JSONDecodeError:
-            # Essayer de réparer le JSON
             try:
-                # Parfois le modèle met du texte avant/après le JSON
                 json_match = re.search(r'\{.*\}', args_str, re.DOTALL)
                 if json_match:
                     arguments = json.loads(json_match.group(0))
@@ -83,14 +113,27 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
 
 def strip_tool_calls(text: str) -> str:
     """Retire les blocs <tool> du texte pour l'affichage."""
-    cleaned = re.sub(r'<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>', '', text, flags=re.DOTALL)
+    cleaned = re.sub(r'```\s*\n*<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>\s*\n*```', '', text, flags=re.DOTALL)
+    cleaned = re.sub(r'<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>', '', cleaned, flags=re.DOTALL)
     return cleaned.strip()
+
+
+def is_task_complete(text: str) -> bool:
+    """Vérifie si le modèle indique que la tâche est terminée."""
+    markers = [
+        "TÂCHE TERMINÉE",
+        "TACHE TERMINEE",
+        "TÂCHE COMPLÈTE",
+        "MISSION ACCOMPLIE",
+    ]
+    upper = text.upper()
+    return any(m.upper() in upper for m in markers)
 
 
 @dataclass
 class EngineEvent:
     """Événement émis par le moteur."""
-    type: str  # thinking, content, tool_call, tool_result, error, done, status
+    type: str
     data: dict
 
 
@@ -109,7 +152,6 @@ class Engine:
         self.on_event = on_event or (lambda e: None)
         self.config = load_config()
 
-        # Construire le prompt système complet avec les outils
         tool_section = TOOL_INSTRUCTIONS_TEMPLATE.format(
             tool_descriptions=build_tool_descriptions()
         )
@@ -125,7 +167,8 @@ class Engine:
 
         self._running = False
         self._step = 0
-        self._max_steps = 50
+        self._max_steps = 80
+        self._consecutive_no_tools = 0
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -133,6 +176,7 @@ class Engine:
         self.session.add_message("user", user_message)
         self._running = True
         self._step = 0
+        self._consecutive_no_tools = 0
 
         final_response = ""
 
@@ -143,7 +187,6 @@ class Engine:
                 "message": f"Étape {self._step}...",
             }))
 
-            # Appel LLM (sans tools natif — on utilise le prompt)
             self.on_event(EngineEvent("thinking", {"step": self._step}))
 
             start_time = time.time()
@@ -151,7 +194,7 @@ class Engine:
                 response = await self.client.chat(
                     model=self.model,
                     messages=self.session.get_messages_for_llm(),
-                    tools=None,  # Pas de tool calling natif
+                    tools=None,
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
                 )
@@ -162,11 +205,9 @@ class Engine:
 
             elapsed = time.time() - start_time
 
-            # Parser les tool calls depuis le texte
             tool_calls = parse_tool_calls(response.content)
             display_text = strip_tool_calls(response.content)
 
-            # Afficher le contenu textuel (sans les blocs tool)
             if display_text:
                 self.on_event(EngineEvent("content", {
                     "text": display_text,
@@ -175,22 +216,37 @@ class Engine:
                 }))
                 final_response = display_text
 
-            # Sauvegarder la réponse complète dans la session
             self.session.add_message("assistant", response.content)
 
             # Exécuter les tool calls
             if tool_calls:
+                self._consecutive_no_tools = 0
                 results = []
                 for tool_call in tool_calls:
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
-                # Envoyer les résultats comme message tool
                 combined_results = "\n---\n".join(results)
-                self.session.add_message("user", f"Résultats des outils :\n{combined_results}")
+                self.session.add_message("user", f"Résultats des outils :\n{combined_results}\n\nContinue ton travail. Utilise les outils pour la prochaine étape.")
             else:
-                # Pas de tool calls = réponse finale
-                self._running = False
+                # Pas de tool calls détectés
+                self._consecutive_no_tools += 1
+
+                # Vérifier si la tâche est terminée
+                if is_task_complete(response.content):
+                    self._running = False
+                elif self._consecutive_no_tools >= 3:
+                    # Le modèle ne veut pas utiliser les outils, on arrête
+                    self.on_event(EngineEvent("error", {
+                        "message": "L'agent n'utilise pas les outils. Essaie de reformuler ta demande.",
+                    }))
+                    self._running = False
+                else:
+                    # Relancer le modèle en lui rappelant d'utiliser les outils
+                    self.session.add_message("user",
+                        "Tu dois utiliser les outils pour agir ! Écris des blocs <tool name=\"...\"> pour créer des fichiers, exécuter des commandes, etc. "
+                        "Ne te contente pas de décrire, EXÉCUTE avec les outils. Continue ton travail."
+                    )
 
         if self._step >= self._max_steps:
             self.on_event(EngineEvent("error", {
@@ -222,7 +278,6 @@ class Engine:
             }))
             return error_msg
 
-        # Vérifier les permissions
         permission = self.config["permissions"].get(tool_call.name, "allow")
         if permission == "deny":
             error_msg = f"Permission refusée pour l'outil: {tool_call.name}"
@@ -233,7 +288,6 @@ class Engine:
             }))
             return error_msg
 
-        # Exécuter l'outil
         try:
             result = await tool.execute(**tool_call.arguments)
             self.on_event(EngineEvent("tool_result", {
@@ -296,9 +350,11 @@ class Engine:
                     })
 
                 combined_results = "\n---\n".join(results)
-                self.session.add_message("user", f"Résultats des outils :\n{combined_results}")
-            else:
+                self.session.add_message("user", f"Résultats des outils :\n{combined_results}\n\nContinue.")
+            elif is_task_complete(response.content):
                 self._running = False
+            else:
+                self.session.add_message("user", "Utilise les outils <tool> pour agir. Continue.")
 
         yield EngineEvent("done", {"total_steps": self._step})
         self.session.save()
