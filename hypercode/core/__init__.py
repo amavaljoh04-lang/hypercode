@@ -1,0 +1,1 @@
+"""Core engine de HyperCode."""

@@ -1,0 +1,1 @@
+"""Interface TUI de HyperCode."""
