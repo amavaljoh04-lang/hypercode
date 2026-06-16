@@ -1,14 +1,95 @@
-"""Moteur principal de HyperCode — boucle agent avec tool calling."""
+"""Moteur principal de HyperCode — boucle agent avec tool calling prompt-based."""
 
 import asyncio
+import json
+import re
 import time
 from typing import Callable, Optional
 from dataclasses import dataclass
 
 from hypercode.core.llm import OllamaClient, Message, LLMResponse, ToolCall
 from hypercode.core.memory import Session, generate_session_id
-from hypercode.tools import get_tools_schema, get_tool_by_name
+from hypercode.tools import get_tool_by_name, ALL_TOOLS
 from hypercode.config import load_config
+
+
+TOOL_INSTRUCTIONS = """
+## OUTILS DISPONIBLES
+
+Tu peux utiliser des outils en écrivant des blocs <tool> dans ta réponse.
+Format EXACT à respecter :
+
+<tool name="NOM_OUTIL">
+{"param1": "valeur1", "param2": "valeur2"}
+</tool>
+
+### Outils :
+
+{tool_descriptions}
+
+## RÈGLES D'UTILISATION DES OUTILS
+- Utilise UN SEUL outil par bloc <tool>
+- Tu peux utiliser PLUSIEURS outils dans une même réponse
+- Après chaque outil, tu recevras le résultat et tu pourras continuer
+- Les paramètres sont en JSON
+- N'invente PAS de paramètres qui n'existent pas
+"""
+
+
+def build_tool_descriptions() -> str:
+    """Génère la description des outils pour le prompt."""
+    descriptions = []
+    for tool in ALL_TOOLS:
+        params_desc = []
+        for pname, pinfo in tool.parameters.items():
+            required = " (REQUIS)" if pinfo.get("required") else ""
+            params_desc.append(f"    - {pname}: {pinfo.get('description', '')}{required}")
+
+        descriptions.append(
+            f"**{tool.name}** — {tool.description}\n"
+            f"  Paramètres:\n" + "\n".join(params_desc)
+        )
+    return "\n\n".join(descriptions)
+
+
+def parse_tool_calls(text: str) -> list[ToolCall]:
+    """Parse les appels d'outils depuis le texte de la réponse."""
+    tool_calls = []
+    # Pattern pour matcher <tool name="...">...</tool>
+    pattern = r'<tool\s+name=["\']([^"\']+)["\']>\s*(.*?)\s*</tool>'
+    matches = re.finditer(pattern, text, re.DOTALL)
+
+    for i, match in enumerate(matches):
+        name = match.group(1).strip()
+        args_str = match.group(2).strip()
+
+        try:
+            arguments = json.loads(args_str)
+        except json.JSONDecodeError:
+            # Essayer de réparer le JSON
+            try:
+                # Parfois le modèle met du texte avant/après le JSON
+                json_match = re.search(r'\{.*\}', args_str, re.DOTALL)
+                if json_match:
+                    arguments = json.loads(json_match.group(0))
+                else:
+                    arguments = {"_raw": args_str}
+            except Exception:
+                arguments = {"_raw": args_str}
+
+        tool_calls.append(ToolCall(
+            id=f"call_{i}",
+            name=name,
+            arguments=arguments,
+        ))
+
+    return tool_calls
+
+
+def strip_tool_calls(text: str) -> str:
+    """Retire les blocs <tool> du texte pour l'affichage."""
+    cleaned = re.sub(r'<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>', '', text, flags=re.DOTALL)
+    return cleaned.strip()
 
 
 @dataclass
@@ -29,10 +110,15 @@ class Engine:
         on_event: Optional[Callable[[EngineEvent], None]] = None,
     ):
         self.model = model
-        self.system_prompt = system_prompt
         self.client = OllamaClient(host=ollama_host)
         self.on_event = on_event or (lambda e: None)
         self.config = load_config()
+
+        # Construire le prompt système complet avec les outils
+        tool_section = TOOL_INSTRUCTIONS.format(
+            tool_descriptions=build_tool_descriptions()
+        )
+        self.system_prompt = system_prompt + "\n\n" + tool_section
 
         self.session = Session(
             id=generate_session_id(),
@@ -40,11 +126,11 @@ class Engine:
             agent=self.config["agent"]["default"],
             working_dir="",
         )
-        self.session.add_message("system", system_prompt)
+        self.session.add_message("system", self.system_prompt)
 
         self._running = False
         self._step = 0
-        self._max_steps = 50  # Limite pour éviter les boucles infinies
+        self._max_steps = 50
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -62,7 +148,7 @@ class Engine:
                 "message": f"Étape {self._step}...",
             }))
 
-            # Appel LLM
+            # Appel LLM (sans tools natif — on utilise le prompt)
             self.on_event(EngineEvent("thinking", {"step": self._step}))
 
             start_time = time.time()
@@ -70,7 +156,7 @@ class Engine:
                 response = await self.client.chat(
                     model=self.model,
                     messages=self.session.get_messages_for_llm(),
-                    tools=get_tools_schema(),
+                    tools=None,  # Pas de tool calling natif
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
                 )
@@ -81,21 +167,32 @@ class Engine:
 
             elapsed = time.time() - start_time
 
-            # Traiter le contenu textuel
-            if response.content:
+            # Parser les tool calls depuis le texte
+            tool_calls = parse_tool_calls(response.content)
+            display_text = strip_tool_calls(response.content)
+
+            # Afficher le contenu textuel (sans les blocs tool)
+            if display_text:
                 self.on_event(EngineEvent("content", {
-                    "text": response.content,
+                    "text": display_text,
                     "duration": elapsed,
                     "tokens_per_second": response.tokens_per_second,
                 }))
-                final_response = response.content
-                self.session.add_message("assistant", response.content)
+                final_response = display_text
 
-            # Traiter les appels d'outils
-            if response.tool_calls:
-                for tool_call in response.tool_calls:
+            # Sauvegarder la réponse complète dans la session
+            self.session.add_message("assistant", response.content)
+
+            # Exécuter les tool calls
+            if tool_calls:
+                results = []
+                for tool_call in tool_calls:
                     result = await self._execute_tool(tool_call)
-                    self.session.add_message("tool", result, name=tool_call.name)
+                    results.append(f"[{tool_call.name}] {result}")
+
+                # Envoyer les résultats comme message tool
+                combined_results = "\n---\n".join(results)
+                self.session.add_message("user", f"Résultats des outils :\n{combined_results}")
             else:
                 # Pas de tool calls = réponse finale
                 self._running = False
@@ -172,7 +269,7 @@ class Engine:
                 response = await self.client.chat(
                     model=self.model,
                     messages=self.session.get_messages_for_llm(),
-                    tools=get_tools_schema(),
+                    tools=None,
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
                 )
@@ -180,22 +277,31 @@ class Engine:
                 yield EngineEvent("error", {"message": str(e)})
                 break
 
-            if response.content:
-                yield EngineEvent("content", {"text": response.content})
-                self.session.add_message("assistant", response.content)
+            tool_calls = parse_tool_calls(response.content)
+            display_text = strip_tool_calls(response.content)
 
-            if response.tool_calls:
-                for tool_call in response.tool_calls:
+            if display_text:
+                yield EngineEvent("content", {"text": display_text})
+
+            self.session.add_message("assistant", response.content)
+
+            if tool_calls:
+                results = []
+                for tool_call in tool_calls:
                     yield EngineEvent("tool_call", {
                         "name": tool_call.name,
                         "arguments": tool_call.arguments,
                     })
                     result = await self._execute_tool(tool_call)
+                    results.append(f"[{tool_call.name}] {result}")
                     yield EngineEvent("tool_result", {
                         "name": tool_call.name,
                         "success": "ERREUR" not in result,
                         "output": result,
                     })
+
+                combined_results = "\n---\n".join(results)
+                self.session.add_message("user", f"Résultats des outils :\n{combined_results}")
             else:
                 self._running = False
 
