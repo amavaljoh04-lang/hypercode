@@ -138,7 +138,7 @@ class ChatInterface:
                 user_input = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self.prompt_session.prompt(
-                        f"\n [bold cyan]❯[/bold cyan] ",
+                        "\n ❯ ",
                     ),
                 )
 
