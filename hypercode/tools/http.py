@@ -1,5 +1,6 @@
 """Outil de requêtes HTTP pour tester des APIs."""
 
+import asyncio
 import httpx
 import json
 from hypercode.tools.base import Tool, ToolResult
@@ -33,57 +34,66 @@ class HttpTool(Tool):
         },
     }
 
-    async def execute(self, method: str, url: str, headers: dict = None, body: str = None,
+    async def execute(self, method: str = "GET", url: str = "", headers: dict = None, body: str = None,
                       timeout: int = 15, **kwargs) -> ToolResult:
-        """Envoie une requête HTTP."""
+        """Envoie une requête HTTP avec retry automatique pour localhost."""
+        if not url:
+            return ToolResult(success=False, output="", error="URL requise")
+
         method = method.upper()
         valid_methods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
         if method not in valid_methods:
             return ToolResult(success=False, output="", error=f"Méthode invalide: {method}")
 
-        try:
-            async with httpx.AsyncClient(timeout=float(timeout), follow_redirects=True) as client:
-                request_kwargs = {
-                    "method": method,
-                    "url": url,
-                    "headers": headers or {},
-                }
+        # Retry pour localhost (le serveur peut mettre du temps à démarrer)
+        is_local = "localhost" in url or "127.0.0.1" in url
+        max_retries = 3 if is_local else 1
+        last_error = None
 
-                if body and method in {"POST", "PUT", "PATCH"}:
-                    try:
-                        json_body = json.loads(body)
-                        request_kwargs["json"] = json_body
-                    except (json.JSONDecodeError, TypeError):
-                        request_kwargs["content"] = body
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=float(timeout), follow_redirects=True) as client:
+                    request_kwargs = {
+                        "method": method,
+                        "url": url,
+                        "headers": headers or {},
+                    }
 
-                resp = await client.request(**request_kwargs)
+                    if body and method in {"POST", "PUT", "PATCH"}:
+                        try:
+                            json_body = json.loads(body)
+                            request_kwargs["json"] = json_body
+                        except (json.JSONDecodeError, TypeError):
+                            request_kwargs["content"] = body
 
-                # Formater la réponse
-                output_parts = [
-                    f"HTTP {resp.status_code} {resp.reason_phrase}",
-                    f"URL: {resp.url}",
-                ]
+                    resp = await client.request(**request_kwargs)
 
-                # Headers de réponse importants
-                important_headers = ["content-type", "content-length", "location", "set-cookie"]
-                for h in important_headers:
-                    if h in resp.headers:
-                        output_parts.append(f"{h}: {resp.headers[h]}")
+                    # Formater la réponse
+                    output_parts = [
+                        f"HTTP {resp.status_code} {resp.reason_phrase}",
+                        f"URL: {resp.url}",
+                    ]
 
-                # Corps
-                content = resp.text
-                if len(content) > 3000:
-                    content = content[:3000] + "\n[...tronqué]"
-                if content:
-                    output_parts.append(f"\nCorps:\n{content}")
+                    important_headers = ["content-type", "content-length", "location", "set-cookie"]
+                    for h in important_headers:
+                        if h in resp.headers:
+                            output_parts.append(f"{h}: {resp.headers[h]}")
 
-                return ToolResult(
-                    success=200 <= resp.status_code < 400,
-                    output="\n".join(output_parts),
-                    error=None if resp.status_code < 400 else f"HTTP {resp.status_code}",
-                )
+                    content = resp.text
+                    if len(content) > 3000:
+                        content = content[:3000] + "\n[...tronqué]"
+                    if content:
+                        output_parts.append(f"\nCorps:\n{content}")
 
-        except httpx.TimeoutException:
-            return ToolResult(success=False, output="", error=f"Timeout ({timeout}s) pour {url}")
-        except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
+                    return ToolResult(
+                        success=200 <= resp.status_code < 400,
+                        output="\n".join(output_parts),
+                        error=None if resp.status_code < 400 else f"HTTP {resp.status_code}",
+                    )
+
+            except (httpx.TimeoutException, httpx.ConnectError, Exception) as e:
+                last_error = str(e)
+                if attempt < max_retries - 1 and is_local:
+                    await asyncio.sleep(2)
+
+        return ToolResult(success=False, output="", error=last_error)

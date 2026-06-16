@@ -82,11 +82,16 @@ class ProcessTool(Tool):
         if not command:
             return ToolResult(success=False, output="", error="Commande requise pour background")
 
+        log_file = f"/tmp/hypercode_bg_{os.getpid()}.log"
+
         process = await asyncio.create_subprocess_shell(
-            f"nohup {command} > /tmp/hypercode_bg_{os.getpid()}.log 2>&1 &",
+            f"nohup {command} > {log_file} 2>&1 &",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         await process.communicate()
+
+        # Attendre un peu que le processus démarre
+        await asyncio.sleep(2)
 
         # Récupérer le PID
         pid_proc = await asyncio.create_subprocess_shell(
@@ -96,7 +101,25 @@ class ProcessTool(Tool):
         stdout, _ = await pid_proc.communicate()
         pids = stdout.decode().strip()
 
+        # Vérifier si le processus tourne
+        if not pids:
+            # Lire le log pour voir l'erreur
+            try:
+                with open(log_file, "r") as f:
+                    log_content = f.read()[:500]
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Le processus n'a pas démarré.\nLog:\n{log_content}",
+                )
+            except FileNotFoundError:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error="Le processus n'a pas démarré (pas de log trouvé)",
+                )
+
         return ToolResult(
             success=True,
-            output=f"Commande lancée en arrière-plan: {command}\nPID(s): {pids}\nLog: /tmp/hypercode_bg_{os.getpid()}.log",
+            output=f"Commande lancée en arrière-plan: {command}\nPID(s): {pids}\nLog: {log_file}",
         )
