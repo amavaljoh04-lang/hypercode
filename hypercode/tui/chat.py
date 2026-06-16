@@ -50,6 +50,45 @@ class ChatInterface:
             on_event=self._handle_event,
         )
 
+    def _detect_language(self, file_path: str) -> str:
+        """Détecte le langage à partir de l'extension."""
+        ext_map = {
+            ".py": "python", ".js": "javascript", ".ts": "typescript",
+            ".html": "html", ".htm": "html", ".css": "css", ".scss": "scss",
+            ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
+            ".md": "markdown", ".sh": "bash", ".bash": "bash",
+            ".rs": "rust", ".go": "go", ".java": "java", ".c": "c",
+            ".cpp": "cpp", ".h": "c", ".hpp": "cpp", ".rb": "ruby",
+            ".php": "php", ".sql": "sql", ".xml": "xml", ".svg": "xml",
+            ".jsx": "jsx", ".tsx": "tsx", ".vue": "vue",
+            ".dockerfile": "dockerfile", ".tf": "hcl", ".lua": "lua",
+        }
+        import os
+        name = os.path.basename(file_path).lower()
+        if name == "dockerfile":
+            return "dockerfile"
+        _, ext = os.path.splitext(name)
+        return ext_map.get(ext, "text")
+
+    def _render_code(self, content: str, file_path: str, max_lines: int = 60):
+        """Affiche du code avec coloration syntaxique dans un panel."""
+        lang = self._detect_language(file_path)
+        lines = content.split("\n")
+        total = len(lines)
+
+        if total > max_lines:
+            # Afficher le début et la fin
+            preview = "\n".join(lines[:40]) + f"\n\n  ... ({total - 50} lignes masquées) ...\n\n" + "\n".join(lines[-10:])
+        else:
+            preview = content
+
+        console.print(Panel(
+            Syntax(preview, lang, theme="monokai", line_numbers=True, word_wrap=True),
+            title=f"[bold cyan]📄 {file_path}[/] [dim]({total} lignes)[/]",
+            border_style="cyan",
+            padding=(0, 1),
+        ))
+
     def _handle_event(self, event: EngineEvent):
         """Gère les événements du moteur."""
         if event.type == "thinking":
@@ -73,49 +112,160 @@ class ChatInterface:
         elif event.type == "tool_call":
             name = event.data.get("name", "")
             args = event.data.get("arguments", {})
-            # Affichage compact de l'appel d'outil
+
+            # Icônes par outil
+            icons = {
+                "bash": "🔧", "write": "📝", "multiwrite": "📝", "edit": "✏️ ",
+                "read": "📖", "search": "🔍", "web": "🌐", "git": "📦",
+                "todo": "📋", "tree": "🌳", "find": "🔎", "http": "🌐",
+                "process": "⚙️ ", "docker": "🐳", "lint": "🧹", "test": "🧪",
+                "diff": "📊", "patch": "🩹", "replace": "🔄", "ssh": "🔑",
+                "database": "🗄️ ", "env": "⚙️ ", "download": "⬇️ ", "archive": "📦",
+                "think": "💭", "clipboard": "📋",
+            }
+            icon = icons.get(name, "⚙️ ")
+
             if name == "bash":
                 cmd = args.get("command", "")
-                console.print(f"  [bold yellow]🔧 bash →[/] [white]{cmd}[/]")
-            elif name == "write":
-                path = args.get("file_path", "")
-                console.print(f"  [bold yellow]📝 write →[/] [white]{path}[/]")
+                console.print(f"\n  [bold yellow]{icon} bash →[/]")
+                console.print(Panel(
+                    Syntax(cmd, "bash", theme="monokai", word_wrap=True),
+                    border_style="yellow",
+                    padding=(0, 1),
+                ))
+            elif name in ("write", "multiwrite"):
+                if name == "write":
+                    path = args.get("file_path", "")
+                    content = args.get("content", "")
+                    console.print(f"\n  [bold yellow]{icon} write →[/] [white]{path}[/]")
+                    if content:
+                        self._render_code(content, path)
+                elif name == "multiwrite":
+                    files = args.get("files", [])
+                    console.print(f"\n  [bold yellow]{icon} multiwrite →[/] [white]{len(files)} fichier(s)[/]")
+                    for f in files:
+                        if isinstance(f, dict):
+                            fpath = f.get("path", "")
+                            fcontent = f.get("content", "")
+                            if fcontent:
+                                self._render_code(fcontent, fpath)
             elif name == "edit":
                 path = args.get("file_path", "")
-                console.print(f"  [bold yellow]✏️  edit →[/] [white]{path}[/]")
+                old = args.get("old_text", "")
+                new = args.get("new_text", "")
+                console.print(f"\n  [bold yellow]{icon} edit →[/] [white]{path}[/]")
+                if old and new:
+                    lang = self._detect_language(path)
+                    console.print(Panel(
+                        Syntax(f"- {old}\n+ {new}", lang, theme="monokai", word_wrap=True),
+                        title="[red]ancien[/] → [green]nouveau[/]",
+                        border_style="yellow",
+                        padding=(0, 1),
+                    ))
             elif name == "read":
                 path = args.get("file_path", "")
-                console.print(f"  [bold yellow]📖 read →[/] [white]{path}[/]")
+                console.print(f"  [bold yellow]{icon} read →[/] [white]{path}[/]")
             elif name == "search":
                 pat = args.get("pattern", "")
-                console.print(f"  [bold yellow]🔍 search →[/] [white]{pat}[/]")
+                console.print(f"  [bold yellow]{icon} search →[/] [white]{pat}[/]")
             elif name == "web":
                 action = args.get("action", "")
-                query = args.get("query", "")
-                console.print(f"  [bold yellow]🌐 web {action} →[/] [white]{query}[/]")
+                query = args.get("query", args.get("url", ""))
+                console.print(f"  [bold yellow]{icon} web {action} →[/] [white]{query}[/]")
             elif name == "git":
                 cmd = args.get("command", "")
-                console.print(f"  [bold yellow]📦 git →[/] [white]{cmd}[/]")
+                console.print(f"  [bold yellow]{icon} git →[/] [white]{cmd}[/]")
             elif name == "todo":
                 action = args.get("action", "")
                 task = args.get("task", "")
-                console.print(f"  [bold yellow]📋 todo {action} →[/] [white]{task}[/]")
+                console.print(f"  [bold yellow]{icon} todo {action} →[/] [white]{task}[/]")
+            elif name == "think":
+                thought = args.get("thought", "")
+                preview = thought[:200] + "..." if len(thought) > 200 else thought
+                console.print(f"  [bold yellow]{icon} think[/]")
+                console.print(Panel(preview, border_style="dim", padding=(0, 1)))
+            elif name == "http":
+                method = args.get("method", "GET")
+                url = args.get("url", "")
+                console.print(f"  [bold yellow]{icon} {method} →[/] [white]{url}[/]")
+            elif name == "tree":
+                path = args.get("path", ".")
+                console.print(f"  [bold yellow]{icon} tree →[/] [white]{path}[/]")
+            elif name == "docker":
+                cmd = args.get("command", "")
+                console.print(f"  [bold yellow]{icon} docker →[/] [white]{cmd}[/]")
+            elif name == "lint":
+                path = args.get("path", "")
+                console.print(f"  [bold yellow]{icon} lint →[/] [white]{path}[/]")
+            elif name == "test":
+                path = args.get("path", "")
+                console.print(f"  [bold yellow]{icon} test →[/] [white]{path}[/]")
+            elif name == "process":
+                action = args.get("action", "")
+                console.print(f"  [bold yellow]{icon} process {action}[/]")
             else:
-                console.print(f"  [bold yellow]⚙️  {name} →[/] [dim]{args}[/]")
+                # Fallback pour les outils non listés
+                summary = str(args)[:120]
+                console.print(f"  [bold yellow]{icon} {name} →[/] [dim]{summary}[/]")
 
         elif event.type == "tool_result":
             name = event.data.get("name", "")
             success = event.data.get("success", False)
             output = event.data.get("output", "")
+            icon = "[green]✓[/]" if success else "[red]✗[/]"
 
-            if output:
-                # Tronquer si trop long pour l'affichage
-                display = output[:500] + "..." if len(output) > 500 else output
-                icon = "[green]✓[/]" if success else "[red]✗[/]"
-                console.print(f"  {icon} [dim]{display}[/]")
-            else:
-                icon = "[green]✓[/]" if success else "[red]✗[/]"
+            if not output:
                 console.print(f"  {icon}")
+                return
+
+            # Affichage spécial pour bash: montrer l'output comme un terminal
+            if name == "bash" and output:
+                display = output[:2000] + "\n[...tronqué]" if len(output) > 2000 else output
+                console.print(Panel(
+                    Syntax(display, "bash", theme="monokai", word_wrap=True),
+                    title=f"{icon} [dim]résultat bash[/]",
+                    border_style="dim green" if success else "dim red",
+                    padding=(0, 1),
+                ))
+            elif name == "read" and output:
+                # On ne réaffiche pas le contenu lu (trop long), juste un résumé
+                lines = output.count("\n") + 1
+                preview = output[:300] + "..." if len(output) > 300 else output
+                console.print(f"  {icon} [dim]Lu {lines} lignes[/]")
+            elif name == "tree" and output:
+                console.print(Panel(
+                    output[:3000],
+                    title=f"{icon} [dim]arborescence[/]",
+                    border_style="dim cyan",
+                    padding=(0, 1),
+                ))
+            elif name == "search" and output:
+                display = output[:1500] + "\n[...tronqué]" if len(output) > 1500 else output
+                console.print(Panel(
+                    display,
+                    title=f"{icon} [dim]résultats de recherche[/]",
+                    border_style="dim yellow",
+                    padding=(0, 1),
+                ))
+            elif name == "http" and output:
+                display = output[:2000] + "\n[...tronqué]" if len(output) > 2000 else output
+                console.print(Panel(
+                    display,
+                    title=f"{icon} [dim]réponse HTTP[/]",
+                    border_style="dim blue",
+                    padding=(0, 1),
+                ))
+            elif name in ("write", "multiwrite", "edit", "patch", "replace"):
+                # Pour les outils d'écriture, on a déjà affiché le code au moment du tool_call
+                lines_info = output.split("\n")[0] if output else ""
+                console.print(f"  {icon} {lines_info}")
+            elif name == "todo":
+                console.print(f"  {icon} [dim]{output}[/]")
+            elif name == "think":
+                console.print(f"  {icon} [dim]Réflexion enregistrée[/]")
+            else:
+                display = output[:500] + "..." if len(output) > 500 else output
+                console.print(f"  {icon} [dim]{display}[/]")
 
         elif event.type == "error":
             msg = event.data.get("message", "Erreur inconnue")
