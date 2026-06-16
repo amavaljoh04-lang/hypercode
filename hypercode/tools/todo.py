@@ -7,6 +7,26 @@ from hypercode.tools.base import Tool, ToolResult
 _session_todos: list[dict] = []
 
 
+def _find_todo_by_name(task_name: str) -> int:
+    """Trouve l'index d'une tâche par son nom (recherche partielle, insensible à la casse)."""
+    if not task_name:
+        return -1
+    task_lower = task_name.lower().strip()
+    # D'abord match exact
+    for i, t in enumerate(_session_todos):
+        if t["task"].lower().strip() == task_lower:
+            return i
+    # Puis match partiel (le nom donné est contenu dans la tâche)
+    for i, t in enumerate(_session_todos):
+        if task_lower in t["task"].lower():
+            return i
+    # Puis match inverse (la tâche est contenue dans le nom donné)
+    for i, t in enumerate(_session_todos):
+        if t["task"].lower() in task_lower:
+            return i
+    return -1
+
+
 class TodoTool(Tool):
     name = "todo"
     description = "Gère une liste de tâches pour tracker l'avancement. Actions: add, complete, list, update."
@@ -32,7 +52,7 @@ class TodoTool(Tool):
         },
     }
 
-    async def execute(self, action: str, task: str = None, status: str = None, index: int = None, **kwargs) -> ToolResult:
+    async def execute(self, action: str = "list", task: str = None, status: str = None, index: int = None, **kwargs) -> ToolResult:
         """Gère les todos."""
         global _session_todos
 
@@ -43,21 +63,38 @@ class TodoTool(Tool):
             return ToolResult(success=True, output=f"Tâche ajoutée: {task}")
 
         elif action == "complete":
-            idx = (index or len(_session_todos)) - 1
+            # Recherche par index d'abord, puis par nom
+            if index is not None:
+                idx = index - 1
+            elif task:
+                idx = _find_todo_by_name(task)
+                if idx == -1:
+                    return ToolResult(success=False, output="", error=f"Tâche non trouvée: '{task}'")
+            else:
+                return ToolResult(success=False, output="", error="Paramètre 'task' ou 'index' requis pour complete")
+
             if 0 <= idx < len(_session_todos):
                 _session_todos[idx]["status"] = "completed"
                 return ToolResult(success=True, output=f"Tâche terminée: {_session_todos[idx]['task']}")
-            return ToolResult(success=False, output="", error="Index invalide")
+            return ToolResult(success=False, output="", error=f"Index {idx + 1} invalide (total: {len(_session_todos)} tâches)")
 
         elif action == "update":
-            idx = (index or 1) - 1
+            if index is not None:
+                idx = index - 1
+            elif task:
+                idx = _find_todo_by_name(task)
+                if idx == -1:
+                    return ToolResult(success=False, output="", error=f"Tâche non trouvée: '{task}'")
+            else:
+                return ToolResult(success=False, output="", error="Paramètre 'task' ou 'index' requis pour update")
+
             if 0 <= idx < len(_session_todos):
                 if status:
                     _session_todos[idx]["status"] = status
-                if task:
+                if task and index is not None:
                     _session_todos[idx]["task"] = task
                 return ToolResult(success=True, output=f"Tâche mise à jour: {_session_todos[idx]['task']} [{_session_todos[idx]['status']}]")
-            return ToolResult(success=False, output="", error="Index invalide")
+            return ToolResult(success=False, output="", error=f"Index {idx + 1} invalide")
 
         elif action == "list":
             if not _session_todos:

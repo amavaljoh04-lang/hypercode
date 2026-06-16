@@ -15,8 +15,15 @@ class MultiWriteTool(Tool):
         },
     }
 
-    async def execute(self, files: list, **kwargs) -> ToolResult:
+    async def execute(self, files=None, **kwargs) -> ToolResult:
         """Crée plusieurs fichiers."""
+        if not files or not isinstance(files, list):
+            return ToolResult(
+                success=False,
+                output="",
+                error="Paramètre 'files' requis : une liste de {\"path\": \"...\", \"content\": \"...\"}",
+            )
+
         created = []
         errors = []
 
@@ -48,6 +55,9 @@ class MultiWriteTool(Tool):
             output_parts.append(f"Fichiers créés ({len(created)}):\n" + "\n".join(created))
         if errors:
             output_parts.append(f"Erreurs ({len(errors)}):\n" + "\n".join(errors))
+
+        if not created and not errors:
+            return ToolResult(success=False, output="", error="La liste 'files' est vide")
 
         return ToolResult(
             success=len(errors) == 0,
