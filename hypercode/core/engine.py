@@ -275,26 +275,56 @@ class Engine:
 
             self.session.add_message("assistant", response.content)
 
-            # Vérifier si la tâche est terminée (AVANT d'exécuter les outils)
+            # Vérifier si la tâche est terminée
             task_done = is_task_complete(response.content)
 
-            # Exécuter les tool calls
+            # Exécuter les tool calls (stop-on-error)
             if tool_calls:
                 self._consecutive_no_tools = 0
                 results = []
+                had_errors = False
+                critical_tools = {"write", "multiwrite", "bash", "edit", "patch", "replace"}
+
                 for tool_call in tool_calls:
+                    # Si un outil critique a échoué, ne pas exécuter les suivants
+                    if had_errors and tool_call.name in critical_tools:
+                        skip_msg = f"[IGNORÉ — erreur précédente] {tool_call.name}"
+                        results.append(f"[{tool_call.name}] {skip_msg}")
+                        self.on_event(EngineEvent("tool_result", {
+                            "name": tool_call.name,
+                            "success": False,
+                            "output": skip_msg,
+                        }))
+                        continue
+
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
-                # Si la tâche est terminée, on exécute les derniers outils mais on arrête
-                if task_done:
+                    if "ERREUR" in result.upper() and tool_call.name in critical_tools:
+                        had_errors = True
+
+                # Si tâche "terminée" mais avec des erreurs → forcer la continuation
+                if task_done and not had_errors:
                     self._running = False
-                else:
+                elif task_done and had_errors:
+                    # Le modèle dit terminé mais des outils ont échoué
                     combined_results = "\n---\n".join(results)
                     self.session.add_message("user",
-                        f"Résultats des outils :\n{combined_results}\n\n"
-                        "Continue. Rappel : TOUT le code doit aller dans <tool name=\"write\">. "
-                        "N'écris JAMAIS de code dans ta réponse texte."
+                        f"⚠️ Tu as dit TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n\n"
+                        "La tâche N'EST PAS terminée. Corrige les erreurs et réessaie. "
+                        "Utilise <tool name=\"bash\"> pour créer les répertoires manquants (mkdir -p) avant d'écrire les fichiers."
+                    )
+                else:
+                    combined_results = "\n---\n".join(results)
+                    error_hint = ""
+                    if had_errors:
+                        error_hint = (
+                            "\n⚠️ Des erreurs se sont produites. Analyse les erreurs ci-dessus et CORRIGE-LES. "
+                            "Si c'est un problème de permission, utilise <tool name=\"bash\">{\"command\": \"mkdir -p /chemin\"}</tool> d'abord. "
+                        )
+                    self.session.add_message("user",
+                        f"Résultats des outils :\n{combined_results}\n{error_hint}\n"
+                        "Continue. TOUT le code dans <tool name=\"write\">, JAMAIS dans la réponse texte."
                     )
             else:
                 # Pas de tool calls détectés
@@ -408,26 +438,55 @@ class Engine:
             if tool_calls:
                 self._consecutive_no_tools = 0
                 results = []
+                had_errors = False
+                critical_tools = {"write", "multiwrite", "bash", "edit", "patch", "replace"}
+
                 for tool_call in tool_calls:
+                    if had_errors and tool_call.name in critical_tools:
+                        skip_msg = f"[IGNORÉ — erreur précédente] {tool_call.name}"
+                        results.append(f"[{tool_call.name}] {skip_msg}")
+                        yield EngineEvent("tool_result", {
+                            "name": tool_call.name,
+                            "success": False,
+                            "output": skip_msg,
+                        })
+                        continue
+
                     yield EngineEvent("tool_call", {
                         "name": tool_call.name,
                         "arguments": tool_call.arguments,
                     })
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
+                    is_error = "ERREUR" in result.upper()
                     yield EngineEvent("tool_result", {
                         "name": tool_call.name,
-                        "success": "ERREUR" not in result.upper(),
+                        "success": not is_error,
                         "output": result,
                     })
+                    if is_error and tool_call.name in critical_tools:
+                        had_errors = True
 
-                if task_done_stream:
+                if task_done_stream and not had_errors:
                     self._running = False
-                else:
+                elif task_done_stream and had_errors:
                     combined_results = "\n---\n".join(results)
                     self.session.add_message("user",
-                        f"Résultats des outils :\n{combined_results}\n\nContinue. "
-                        "Rappel : TOUT le code dans <tool name=\"write\">, JAMAIS dans la réponse texte."
+                        f"⚠️ Tu as dit TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n\n"
+                        "La tâche N'EST PAS terminée. Corrige les erreurs et réessaie. "
+                        "Utilise <tool name=\"bash\"> pour créer les répertoires manquants (mkdir -p)."
+                    )
+                else:
+                    combined_results = "\n---\n".join(results)
+                    error_hint = ""
+                    if had_errors:
+                        error_hint = (
+                            "\n⚠️ Des erreurs se sont produites. CORRIGE-LES avant de continuer. "
+                            "mkdir -p pour créer les répertoires manquants."
+                        )
+                    self.session.add_message("user",
+                        f"Résultats des outils :\n{combined_results}\n{error_hint}\n"
+                        "Continue. TOUT le code dans <tool name=\"write\">, JAMAIS dans la réponse texte."
                     )
             elif task_done_stream:
                 self._running = False
