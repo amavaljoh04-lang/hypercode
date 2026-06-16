@@ -305,43 +305,24 @@ class ChatInterface:
 
             if name == "bash":
                 cmd = args.get("command", "")
-                console.print(f"  [bold yellow]{icon} bash →[/]")
-                console.print(Panel(
-                    Syntax(cmd, "bash", theme="monokai", word_wrap=True),
-                    border_style="yellow",
-                    padding=(0, 1),
-                ))
+                # Affichage compact de la commande
+                cmd_display = cmd if len(cmd) <= 120 else cmd[:117] + "..."
+                console.print(f"  [bold yellow]{icon} bash →[/] [white]{cmd_display}[/]")
 
             elif name in ("write", "multiwrite"):
                 if name == "write":
                     path = args.get("file_path", "")
                     content = args.get("content", "")
-                    console.print(f"  [bold yellow]{icon} write →[/] [white]{path}[/]")
-                    if content:
-                        self._render_code(content, path)
+                    lines = content.count("\n") + 1 if content else 0
+                    console.print(f"  [bold yellow]{icon} write →[/] [white]{path}[/] [dim]({lines} lignes)[/]")
                 elif name == "multiwrite":
                     files = args.get("files", [])
-                    console.print(f"  [bold yellow]{icon} multiwrite →[/] [white]{len(files)} fichier(s)[/]")
-                    for f in files:
-                        if isinstance(f, dict):
-                            fpath = f.get("path", "")
-                            fcontent = f.get("content", "")
-                            if fcontent:
-                                self._render_code(fcontent, fpath)
+                    names = [os.path.basename(f.get("path", "?")) for f in files if isinstance(f, dict)]
+                    console.print(f"  [bold yellow]{icon} multiwrite →[/] [white]{', '.join(names)}[/] [dim]({len(files)} fichier(s))[/]")
 
             elif name == "edit":
                 path = args.get("file_path", "")
-                old = args.get("old_text", "")
-                new = args.get("new_text", "")
                 console.print(f"  [bold yellow]{icon} edit →[/] [white]{path}[/]")
-                if old and new:
-                    lang = self._detect_language(path)
-                    console.print(Panel(
-                        Syntax(f"- {old}\n+ {new}", lang, theme="monokai", word_wrap=True),
-                        title="[red]ancien[/] → [green]nouveau[/]",
-                        border_style="yellow",
-                        padding=(0, 1),
-                    ))
 
             elif name == "read":
                 path = args.get("file_path", "")
@@ -452,45 +433,43 @@ class ChatInterface:
                 reaction = random.choice(PHRASES_ERROR)
 
             if name == "bash" and output:
-                display = output[:2000] + "\n[...tronqué]" if len(output) > 2000 else output
-                console.print(Panel(
-                    Syntax(display, "bash", theme="monokai", word_wrap=True),
-                    title=f"{'✅' if success else '❌'} [dim]résultat[/]",
-                    border_style="dim green" if success else "dim red",
-                    padding=(0, 1),
-                ))
-                console.print(f"  [italic dim]{reaction}[/]")
+                # Compact : juste les premières lignes
+                lines = output.strip().split("\n")
+                if len(lines) <= 3:
+                    display = output.strip()
+                else:
+                    display = "\n".join(lines[:3]) + f"\n  ... ({len(lines)} lignes au total)"
+                if len(display) > 300:
+                    display = display[:297] + "..."
+                console.print(f"  {icon_ok if success else icon_fail} [dim]{display}[/]")
+                if not success:
+                    console.print(f"  [italic dim]{reaction}[/]")
 
             elif name == "read" and output:
                 lines = output.count("\n") + 1
                 console.print(f"  {icon_ok} [dim]Lu {lines} lignes — OK[/]")
 
             elif name == "tree" and output:
-                console.print(Panel(
-                    output[:3000],
-                    title=f"{'✅' if success else '❌'} [dim]arborescence[/]",
-                    border_style="dim cyan",
-                    padding=(0, 1),
-                ))
+                # Compact : max 15 lignes
+                lines = output.strip().split("\n")
+                if len(lines) > 15:
+                    display = "\n".join(lines[:15]) + f"\n  ... ({len(lines)} lignes)"
+                else:
+                    display = output.strip()
+                console.print(f"  {icon_ok} [dim]{display}[/]")
 
             elif name == "search" and output:
-                display = output[:1500] + "\n[...tronqué]" if len(output) > 1500 else output
-                console.print(Panel(
-                    display,
-                    title=f"{'✅' if success else '❌'} [dim]résultats[/]",
-                    border_style="dim yellow",
-                    padding=(0, 1),
-                ))
+                lines = output.strip().split("\n")
+                display = "\n".join(lines[:5]) if len(lines) > 5 else output.strip()
+                if len(display) > 400:
+                    display = display[:397] + "..."
+                console.print(f"  {icon_ok if success else icon_fail} [dim]{display}[/]")
 
             elif name == "http" and output:
-                display = output[:2000] + "\n[...tronqué]" if len(output) > 2000 else output
-                console.print(Panel(
-                    display,
-                    title=f"{'✅' if success else '❌'} [dim]réponse HTTP[/]",
-                    border_style="dim blue",
-                    padding=(0, 1),
-                ))
-                console.print(f"  [italic dim]{reaction}[/]")
+                # Juste le status + premières lignes
+                lines = output.strip().split("\n")
+                status_line = lines[0] if lines else ""
+                console.print(f"  {icon_ok if success else icon_fail} [dim]{status_line}[/]")
 
             elif name in ("write", "multiwrite", "edit", "patch", "replace"):
                 lines_info = output.split("\n")[0] if output else ""
@@ -505,33 +484,30 @@ class ChatInterface:
                 console.print(f"  {icon_ok} [italic dim]Réflexion enregistrée[/]")
 
             elif name == "web":
-                display = output[:1500] + "\n[...tronqué]" if len(output) > 1500 else output
-                console.print(Panel(
-                    display,
-                    title=f"{'✅' if success else '❌'} [dim]résultat web[/]",
-                    border_style="dim blue",
-                    padding=(0, 1),
-                ))
+                lines = output.strip().split("\n")
+                display = "\n".join(lines[:4]) if len(lines) > 4 else output.strip()
+                if len(display) > 300:
+                    display = display[:297] + "..."
+                console.print(f"  {icon_ok if success else icon_fail} [dim]{display}[/]")
 
             elif name == "lint":
-                display = output[:2000] + "\n[...tronqué]" if len(output) > 2000 else output
-                console.print(Panel(
-                    display,
-                    title=f"{'✅' if success else '❌'} [dim]résultat lint[/]",
-                    border_style="dim green" if success else "dim red",
-                    padding=(0, 1),
-                ))
-                console.print(f"  [italic dim]{reaction}[/]")
+                lines = output.strip().split("\n")
+                display = "\n".join(lines[:5]) if len(lines) > 5 else output.strip()
+                if len(display) > 400:
+                    display = display[:397] + "..."
+                console.print(f"  {icon_ok if success else icon_fail} [dim]{display}[/]")
+                if not success:
+                    console.print(f"  [italic dim]{reaction}[/]")
 
             elif name == "test":
-                display = output[:3000] + "\n[...tronqué]" if len(output) > 3000 else output
-                console.print(Panel(
-                    display,
-                    title=f"{'✅' if success else '❌'} [dim]résultat tests[/]",
-                    border_style="dim green" if success else "dim red",
-                    padding=(0, 1),
-                ))
-                console.print(f"  [italic dim]{reaction}[/]")
+                lines = output.strip().split("\n")
+                # Montrer les dernières lignes (résumé des tests)
+                display = "\n".join(lines[-5:]) if len(lines) > 5 else output.strip()
+                if len(display) > 400:
+                    display = display[:397] + "..."
+                console.print(f"  {icon_ok if success else icon_fail} [dim]{display}[/]")
+                if not success:
+                    console.print(f"  [italic dim]{reaction}[/]")
 
             else:
                 display = output[:500] + "..." if len(output) > 500 else output
