@@ -13,27 +13,22 @@ from hypercode.tools import get_tool_by_name, ALL_TOOLS
 from hypercode.config import load_config
 
 
-TOOL_INSTRUCTIONS = """
-## OUTILS DISPONIBLES
-
-Tu peux utiliser des outils en écrivant des blocs <tool> dans ta réponse.
-Format EXACT à respecter :
-
-<tool name="NOM_OUTIL">
-{"param1": "valeur1", "param2": "valeur2"}
-</tool>
-
-### Outils :
-
-{tool_descriptions}
-
-## RÈGLES D'UTILISATION DES OUTILS
-- Utilise UN SEUL outil par bloc <tool>
-- Tu peux utiliser PLUSIEURS outils dans une même réponse
-- Après chaque outil, tu recevras le résultat et tu pourras continuer
-- Les paramètres sont en JSON
-- N'invente PAS de paramètres qui n'existent pas
-"""
+TOOL_INSTRUCTIONS_TEMPLATE = (
+    "\n## OUTILS DISPONIBLES\n\n"
+    "Tu peux utiliser des outils en écrivant des blocs <tool> dans ta réponse.\n"
+    "Format EXACT à respecter :\n\n"
+    '<tool name="NOM_OUTIL">\n'
+    '{{"param1": "valeur1", "param2": "valeur2"}}\n'
+    "</tool>\n\n"
+    "### Outils :\n\n"
+    "{tool_descriptions}\n\n"
+    "## RÈGLES D'UTILISATION DES OUTILS\n"
+    "- Utilise UN SEUL outil par bloc <tool>\n"
+    "- Tu peux utiliser PLUSIEURS outils dans une même réponse\n"
+    "- Après chaque outil, tu recevras le résultat et tu pourras continuer\n"
+    "- Les paramètres sont en JSON\n"
+    "- N'invente PAS de paramètres qui n'existent pas\n"
+)
 
 
 def build_tool_descriptions() -> str:
@@ -115,7 +110,7 @@ class Engine:
         self.config = load_config()
 
         # Construire le prompt système complet avec les outils
-        tool_section = TOOL_INSTRUCTIONS.format(
+        tool_section = TOOL_INSTRUCTIONS_TEMPLATE.format(
             tool_descriptions=build_tool_descriptions()
         )
         self.system_prompt = system_prompt + "\n\n" + tool_section
