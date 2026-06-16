@@ -45,10 +45,6 @@ TOOL_INSTRUCTIONS_TEMPLATE = (
     '<tool name="tree">\n'
     '{{"path": "/workspace"}}\n'
     "</tool>\n\n"
-    "Pour créer PLUSIEURS fichiers d'un coup :\n\n"
-    '<tool name="multiwrite">\n'
-    '{{"files": [{{"path": "/workspace/a.txt", "content": "aaa"}}, {{"path": "/workspace/b.txt", "content": "bbb"}}]}}\n'
-    "</tool>\n\n"
     "## Tous les outils disponibles\n\n"
     "{tool_descriptions}\n\n"
     "## Règles ABSOLUES\n"
@@ -57,6 +53,8 @@ TOOL_INSTRUCTIONS_TEMPLATE = (
     "3. N'encadre PAS les blocs <tool> dans des balises markdown ``` — écris-les directement.\n"
     "4. Quand ta tâche est TERMINÉE, écris le mot exact : TÂCHE TERMINÉE\n"
     "5. Tant que tu n'as PAS écrit TÂCHE TERMINÉE, tu DOIS continuer à travailler en utilisant les outils.\n"
+    "6. ⛔ N'écris JAMAIS du code (HTML/CSS/JS/Python) dans ta réponse texte. C'est du texte mort. Utilise TOUJOURS <tool name=\"write\"> pour créer un fichier.\n"
+    "7. Pour les GROS fichiers (>20 lignes), utilise <tool name=\"write\"> individuellement pour CHAQUE fichier. N'utilise PAS multiwrite pour du gros contenu.\n"
     "---\n"
 )
 
@@ -277,6 +275,9 @@ class Engine:
 
             self.session.add_message("assistant", response.content)
 
+            # Vérifier si la tâche est terminée (AVANT d'exécuter les outils)
+            task_done = is_task_complete(response.content)
+
             # Exécuter les tool calls
             if tool_calls:
                 self._consecutive_no_tools = 0
@@ -285,15 +286,19 @@ class Engine:
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
-                combined_results = "\n---\n".join(results)
-                self.session.add_message("user",
-                    f"Résultats des outils :\n{combined_results}\n\n"
-                    "Bien ! Continue ton travail avec la prochaine étape. "
-                    "Utilise les outils <tool> pour chaque action."
-                )
+                # Si la tâche est terminée, on exécute les derniers outils mais on arrête
+                if task_done:
+                    self._running = False
+                else:
+                    combined_results = "\n---\n".join(results)
+                    self.session.add_message("user",
+                        f"Résultats des outils :\n{combined_results}\n\n"
+                        "Continue. Rappel : TOUT le code doit aller dans <tool name=\"write\">. "
+                        "N'écris JAMAIS de code dans ta réponse texte."
+                    )
             else:
                 # Pas de tool calls détectés
-                if is_task_complete(response.content):
+                if task_done:
                     self._running = False
                     continue
 
@@ -398,6 +403,8 @@ class Engine:
 
             self.session.add_message("assistant", response.content)
 
+            task_done_stream = is_task_complete(response.content)
+
             if tool_calls:
                 self._consecutive_no_tools = 0
                 results = []
@@ -414,11 +421,15 @@ class Engine:
                         "output": result,
                     })
 
-                combined_results = "\n---\n".join(results)
-                self.session.add_message("user",
-                    f"Résultats des outils :\n{combined_results}\n\nContinue avec la prochaine étape."
-                )
-            elif is_task_complete(response.content):
+                if task_done_stream:
+                    self._running = False
+                else:
+                    combined_results = "\n---\n".join(results)
+                    self.session.add_message("user",
+                        f"Résultats des outils :\n{combined_results}\n\nContinue. "
+                        "Rappel : TOUT le code dans <tool name=\"write\">, JAMAIS dans la réponse texte."
+                    )
+            elif task_done_stream:
                 self._running = False
             else:
                 self._consecutive_no_tools += 1
