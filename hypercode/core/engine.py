@@ -430,11 +430,38 @@ class Engine:
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
-                    # After successful edit, allow re-reading the edited file
+                    # After successful edit on .py file, auto-run it to show next error
                     if tool_call.name == "edit" and "ERREUR" not in result.upper():
                         fp = tool_call.arguments.get("file_path", "")
                         if fp:
                             self._clear_loop_history_for_file(fp)
+                        if fp and fp.endswith(".py"):
+                            auto_run = f"python3 {fp}"
+                            try:
+                                import asyncio as _aio
+                                proc = await _aio.create_subprocess_shell(
+                                    auto_run,
+                                    stdout=_aio.subprocess.PIPE,
+                                    stderr=_aio.subprocess.PIPE,
+                                    cwd=self.session.working_dir or os.path.dirname(fp),
+                                )
+                                stdout, stderr = await _aio.wait_for(proc.communicate(), timeout=10)
+                                auto_output = (stdout or b"").decode()[:500]
+                                auto_err = (stderr or b"").decode()[:500]
+                                if proc.returncode == 0:
+                                    auto_result = f"[auto-test] python3 OK:\n{auto_output}"
+                                else:
+                                    auto_result = f"[auto-test] python3 ERREUR:\n{auto_err}"
+                                results.append(auto_result)
+                                self.on_event(EngineEvent("tool_result", {
+                                    "name": "bash",
+                                    "success": proc.returncode == 0,
+                                    "output": auto_result,
+                                }))
+                                if proc.returncode != 0:
+                                    had_errors = True
+                            except Exception:
+                                pass
 
                     if "ERREUR" in result.upper() and tool_call.name in critical_tools:
                         had_errors = True
@@ -444,7 +471,7 @@ class Engine:
                 elif task_done and had_errors:
                     combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"ERREURS:\n{combined_results}\nCorrige."
+                        f"ERREURS:\n{combined_results}\nCorrige le prochain bug avec edit."
                     )
                 else:
                     self._build_continue_message(had_errors, _is_cmd_loop, results)
@@ -741,11 +768,37 @@ class Engine:
                         "success": not is_error,
                         "output": result,
                     })
-                    # After successful edit, allow re-reading the edited file
+                    # After successful edit on .py file, auto-run it
                     if tool_call.name == "edit" and not is_error:
                         fp = tool_call.arguments.get("file_path", "")
                         if fp:
                             self._clear_loop_history_for_file(fp)
+                        if fp and fp.endswith(".py"):
+                            try:
+                                import asyncio as _aio2
+                                proc = await _aio2.create_subprocess_shell(
+                                    f"python3 {fp}",
+                                    stdout=_aio2.subprocess.PIPE,
+                                    stderr=_aio2.subprocess.PIPE,
+                                    cwd=self.session.working_dir or os.path.dirname(fp),
+                                )
+                                stdout, stderr = await _aio2.wait_for(proc.communicate(), timeout=10)
+                                auto_out = (stdout or b"").decode()[:500]
+                                auto_err = (stderr or b"").decode()[:500]
+                                if proc.returncode == 0:
+                                    ar = f"[auto-test] python3 OK:\n{auto_out}"
+                                else:
+                                    ar = f"[auto-test] python3 ERREUR:\n{auto_err}"
+                                results.append(ar)
+                                yield EngineEvent("tool_result", {
+                                    "name": "bash",
+                                    "success": proc.returncode == 0,
+                                    "output": ar,
+                                })
+                                if proc.returncode != 0:
+                                    had_errors = True
+                            except Exception:
+                                pass
                     if is_error and tool_call.name in critical_tools:
                         had_errors = True
 
@@ -754,7 +807,7 @@ class Engine:
                 elif task_done_stream and had_errors:
                     combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"ERREURS:\n{combined_results}\nCorrige."
+                        f"ERREURS:\n{combined_results}\nCorrige le prochain bug avec edit."
                     )
                 else:
                     self._build_continue_message(had_errors, _is_cmd_loop, results)
