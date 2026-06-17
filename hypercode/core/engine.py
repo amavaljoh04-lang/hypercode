@@ -428,6 +428,18 @@ class Engine:
                         had_errors = True
                         self._last_error = result[:500]
 
+                # Track files written this step for write-loop detection
+                step_writes = set()
+                for tc in tool_calls:
+                    if tc.name in ("write", "multiwrite"):
+                        fp = tc.arguments.get("file_path", "")
+                        if fp:
+                            step_writes.add(fp)
+                rewritten = step_writes & self._files_written
+                self._files_written.update(step_writes)
+                if rewritten:
+                    self._repeated_writes += 1
+
                 if task_done and not had_errors:
                     self._running = False
                 elif task_done and had_errors:
@@ -435,8 +447,14 @@ class Engine:
                     self.session.add_message("user",
                         f"Erreurs détectées:\n{combined_results}"
                     )
+                elif self._repeated_writes >= 2:
+                    # Model keeps rewriting same files — force stop
+                    self.session.add_message("user",
+                        "⛔ Tu réécris les mêmes fichiers. "
+                        "Tout fonctionne déjà. Dis TÂCHE TERMINÉE."
+                    )
                 else:
-                    # OpenCode pattern: just feed results, no "Continue" noise
+                    # Just feed results back
                     combined_results = _truncate_results(results)
                     self.session.add_message("user", combined_results)
             else:
@@ -706,6 +724,18 @@ class Engine:
                         had_errors = True
                         self._last_error = result[:500]
 
+                # Track files written this step for write-loop detection
+                step_writes = set()
+                for tc in tool_calls:
+                    if tc.name in ("write", "multiwrite"):
+                        fp = tc.arguments.get("file_path", "")
+                        if fp:
+                            step_writes.add(fp)
+                rewritten = step_writes & self._files_written
+                self._files_written.update(step_writes)
+                if rewritten:
+                    self._repeated_writes += 1
+
                 if task_done_stream and not had_errors:
                     self._running = False
                 elif task_done_stream and had_errors:
@@ -713,8 +743,12 @@ class Engine:
                     self.session.add_message("user",
                         f"Erreurs détectées:\n{combined_results}"
                     )
+                elif self._repeated_writes >= 2:
+                    self.session.add_message("user",
+                        "⛔ Tu réécris les mêmes fichiers. "
+                        "Tout fonctionne déjà. Dis TÂCHE TERMINÉE."
+                    )
                 else:
-                    # Just feed results back — no "Continue" noise
                     combined_results = _truncate_results(results)
                     self.session.add_message("user", combined_results)
             elif task_done_stream:
