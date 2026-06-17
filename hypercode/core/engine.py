@@ -371,12 +371,11 @@ class Engine:
                             if isinstance(f, dict):
                                 new_files.add(f.get("path", "") or f.get("file_path", ""))
 
-                # Detect repeated writes (same files already written)
-                if new_files and new_files.issubset(self._files_written):
+                # Detect repeated writes — ANY file rewritten = loop
+                rewritten = new_files & self._files_written
+                if rewritten:
                     self._repeated_writes += 1
-                else:
-                    self._repeated_writes = 0
-                    self._files_written.update(new_files)
+                self._files_written.update(new_files)
 
                 # General loop detection — track command signatures
                 cmd_sigs = []
@@ -427,20 +426,20 @@ class Engine:
                         f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
-                    # HARD STOP: if loop persists 3+ cycles, force next phase
-                    if self._repeated_writes >= 3 or (_is_cmd_loop and self._repeated_writes >= 2):
+                    # HARD STOP: if loop persists 2+ cycles, force next phase
+                    if self._repeated_writes >= 2 or (_is_cmd_loop and self._step >= 5):
                         self.session.add_message("user",
-                            "STOP IMMÉDIAT. Les fichiers sont créés. Exécute: "
-                            '<tool name="bash">{"command": "cd /workspace && python3 -m http.server 8888 &"}</tool> '
-                            "puis vérifie avec http GET. Puis TÂCHE TERMINÉE."
+                            "⛔ STOP. Tu réécris les mêmes fichiers. ILS SONT DÉJÀ BONS. "
+                            "Prochaine action obligatoire: lance le serveur, teste, ou dis TÂCHE TERMINÉE. "
+                            "NE RÉÉCRIS PLUS AUCUN FICHIER."
                         )
                     elif _is_cmd_loop:
                         self.session.add_message("user",
-                            "⚠️ BOUCLE. Tu fais la MÊME chose. Action DIFFÉRENTE maintenant: "
+                            "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
                             "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
                     elif self._repeated_writes >= 1:
                         self.session.add_message("user",
-                            "Fichiers déjà créés. Passe à l'étape suivante: lance le serveur ou vérifie. TÂCHE TERMINÉE si c'est bon.")
+                            "Fichier déjà écrit. NE PAS réécrire. Passe à l'étape suivante.")
                     else:
                         combined_results = _truncate_results(results)
                         msg = f"OK:\n{combined_results}"
@@ -582,11 +581,10 @@ class Engine:
                             if isinstance(f, dict):
                                 new_files.add(f.get("path", "") or f.get("file_path", ""))
 
-                if new_files and new_files.issubset(self._files_written):
+                rewritten = new_files & self._files_written
+                if rewritten:
                     self._repeated_writes += 1
-                else:
-                    self._repeated_writes = 0
-                    self._files_written.update(new_files)
+                self._files_written.update(new_files)
 
                 # General loop detection — track command signatures
                 cmd_sigs = []
@@ -644,19 +642,19 @@ class Engine:
                         f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
-                    if self._repeated_writes >= 3 or (_is_cmd_loop and self._repeated_writes >= 2):
+                    if self._repeated_writes >= 2 or (_is_cmd_loop and self._step >= 5):
                         self.session.add_message("user",
-                            "STOP IMMÉDIAT. Les fichiers sont créés. Exécute: "
-                            '<tool name="bash">{"command": "cd /workspace && python3 -m http.server 8888 &"}</tool> '
-                            "puis vérifie avec http GET. Puis TÂCHE TERMINÉE."
+                            "⛔ STOP. Tu réécris les mêmes fichiers. ILS SONT DÉJÀ BONS. "
+                            "Prochaine action obligatoire: lance le serveur, teste, ou dis TÂCHE TERMINÉE. "
+                            "NE RÉÉCRIS PLUS AUCUN FICHIER."
                         )
                     elif _is_cmd_loop:
                         self.session.add_message("user",
-                            "⚠️ BOUCLE. Tu fais la MÊME chose. Action DIFFÉRENTE maintenant: "
+                            "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
                             "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
                     elif self._repeated_writes >= 1:
                         self.session.add_message("user",
-                            "Fichiers déjà créés. Passe à l'étape suivante: lance le serveur ou vérifie. TÂCHE TERMINÉE si c'est bon.")
+                            "Fichier déjà écrit. NE PAS réécrire. Passe à l'étape suivante.")
                     else:
                         combined_results = _truncate_results(results)
                         msg = f"OK:\n{combined_results}"
