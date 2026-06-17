@@ -426,44 +426,7 @@ class Engine:
                         f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
-                    # HARD STOP: if loop persists 2+ cycles, force next phase
-                    if self._repeated_writes >= 2 or (_is_cmd_loop and self._step >= 5):
-                        self.session.add_message("user",
-                            "⛔ STOP. Tu réécris les mêmes fichiers. ILS SONT DÉJÀ BONS. "
-                            "Prochaine action obligatoire: lance le serveur, teste, ou dis TÂCHE TERMINÉE. "
-                            "NE RÉÉCRIS PLUS AUCUN FICHIER."
-                        )
-                    elif _is_cmd_loop:
-                        # Find what file is being looped on
-                        looped_file = ""
-                        from collections import Counter as _C
-                        _counts = _C(self._recent_commands[-6:])
-                        top_cmd = _counts.most_common(1)[0][0]
-                        if ":" in top_cmd:
-                            looped_file = top_cmd.split(":", 1)[1].strip()
-                        if looped_file and ("read" in top_cmd or "bash:cat" in top_cmd):
-                            self.session.add_message("user",
-                                f'⚠️ BOUCLE sur {looped_file}. Tu l\'as déjà lu. CORRIGE avec edit:\n'
-                                f'<tool name="edit">{{"file_path": "{looped_file}", '
-                                f'"old_text": "ligne_avec_bug", "new_text": "ligne_corrigée"}}</tool>\n'
-                                f'Ou réécris le fichier complet avec write. NE RELIS PLUS.')
-                        else:
-                            self.session.add_message("user",
-                                "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
-                                "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
-                    elif self._repeated_writes >= 1:
-                        self.session.add_message("user",
-                            "Fichier déjà écrit. NE PAS réécrire. Passe à l'étape suivante.")
-                    else:
-                        combined_results = _truncate_results(results)
-                        msg = f"OK:\n{combined_results}"
-                        if had_errors:
-                            msg += "\nCorrige l'erreur."
-                        else:
-                            msg += "\nContinue."
-                        if self._step >= 20:
-                            msg += f"\n[{self._step}/{self._max_steps}] FINIS."
-                        self.session.add_message("user", msg)
+                    self._build_continue_message(had_errors, _is_cmd_loop, results)
             else:
                 if task_done:
                     self._running = False
@@ -491,6 +454,64 @@ class Engine:
 
         self.session.save()
         return final_response
+
+    def _build_continue_message(self, had_errors: bool, is_cmd_loop: bool, results: list):
+        """Build the continue message based on loop detection state."""
+        import re as _re
+        from collections import Counter as _C
+
+        if self._repeated_writes >= 2:
+            self.session.add_message("user",
+                "⛔ STOP. Fichiers déjà bons. Lance serveur/teste ou TÂCHE TERMINÉE.")
+            return
+
+        if is_cmd_loop and had_errors:
+            _counts = _C(self._recent_commands[-6:])
+            top_cmd = _counts.most_common(1)[0][0]
+            failing_file = ""
+            if "bash:" in top_cmd:
+                _m = _re.search(r'(/\S+\.\w+)', top_cmd)
+                if _m:
+                    failing_file = _m.group(1)
+            if failing_file:
+                self.session.add_message("user",
+                    f'⚠️ Le script crash. CORRIGE le bug avec edit AVANT de relancer:\n'
+                    f'<tool name="edit">{{"file_path": "{failing_file}", '
+                    f'"old_text": "ligne exacte du bug", "new_text": "ligne corrigée"}}</tool>\n'
+                    f'NE RELANCE PAS avant edit.')
+            else:
+                self.session.add_message("user",
+                    "⚠️ BOUCLE + erreur. Utilise edit pour corriger AVANT de relancer.")
+            return
+
+        if is_cmd_loop:
+            _counts = _C(self._recent_commands[-6:])
+            top_cmd = _counts.most_common(1)[0][0]
+            looped_target = top_cmd.split(":", 1)[1].strip() if ":" in top_cmd else ""
+            if looped_target and ("read" in top_cmd or "bash:cat" in top_cmd):
+                self.session.add_message("user",
+                    f'⚠️ BOUCLE lecture. CORRIGE:\n'
+                    f'<tool name="edit">{{"file_path": "{looped_target}", '
+                    f'"old_text": "bug", "new_text": "fix"}}</tool>')
+            else:
+                self.session.add_message("user",
+                    "⚠️ BOUCLE. Action DIFFÉRENTE ou TÂCHE TERMINÉE.")
+            return
+
+        if self._repeated_writes >= 1:
+            self.session.add_message("user",
+                "Fichier déjà écrit. Passe à l'étape suivante.")
+            return
+
+        combined_results = _truncate_results(results)
+        msg = f"OK:\n{combined_results}"
+        if had_errors:
+            msg += "\nCorrige le bug avec edit puis relance."
+        else:
+            msg += "\nContinue."
+        if self._step >= 20:
+            msg += f"\n[{self._step}/{self._max_steps}] FINIS."
+        self.session.add_message("user", msg)
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Exécute un appel d'outil."""
@@ -656,42 +677,7 @@ class Engine:
                         f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
-                    if self._repeated_writes >= 2 or (_is_cmd_loop and self._step >= 5):
-                        self.session.add_message("user",
-                            "⛔ STOP. Tu réécris les mêmes fichiers. ILS SONT DÉJÀ BONS. "
-                            "Prochaine action obligatoire: lance le serveur, teste, ou dis TÂCHE TERMINÉE. "
-                            "NE RÉÉCRIS PLUS AUCUN FICHIER."
-                        )
-                    elif _is_cmd_loop:
-                        looped_file = ""
-                        from collections import Counter as _C2
-                        _counts2 = _C2(self._recent_commands[-6:])
-                        top_cmd2 = _counts2.most_common(1)[0][0]
-                        if ":" in top_cmd2:
-                            looped_file = top_cmd2.split(":", 1)[1].strip()
-                        if looped_file and ("read" in top_cmd2 or "bash:cat" in top_cmd2):
-                            self.session.add_message("user",
-                                f'⚠️ BOUCLE sur {looped_file}. Tu l\'as déjà lu. CORRIGE avec edit:\n'
-                                f'<tool name="edit">{{"file_path": "{looped_file}", '
-                                f'"old_text": "ligne_avec_bug", "new_text": "ligne_corrigée"}}</tool>\n'
-                                f'Ou réécris le fichier complet avec write. NE RELIS PLUS.')
-                        else:
-                            self.session.add_message("user",
-                                "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
-                                "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
-                    elif self._repeated_writes >= 1:
-                        self.session.add_message("user",
-                            "Fichier déjà écrit. NE PAS réécrire. Passe à l'étape suivante.")
-                    else:
-                        combined_results = _truncate_results(results)
-                        msg = f"OK:\n{combined_results}"
-                        if had_errors:
-                            msg += "\nCorrige l'erreur."
-                        else:
-                            msg += "\nContinue."
-                        if self._step >= 20:
-                            msg += f"\n[{self._step}/{self._max_steps}] FINIS."
-                        self.session.add_message("user", msg)
+                    self._build_continue_message(had_errors, _is_cmd_loop, results)
             elif task_done_stream:
                 self._running = False
             else:
