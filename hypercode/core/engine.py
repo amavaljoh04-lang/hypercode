@@ -23,10 +23,12 @@ NUDGE_MESSAGES = [
 ]
 
 
-def build_tool_descriptions() -> str:
+def build_tool_descriptions(allowed_tools: list[str] | None = None) -> str:
     """Génère la description ultra-compacte des outils."""
     descriptions = []
     for tool in ALL_TOOLS:
+        if allowed_tools and tool.name not in allowed_tools:
+            continue
         params = ", ".join(tool.parameters.keys())
         descriptions.append(f"- {tool.name}({params})")
     return "\n".join(descriptions)
@@ -258,14 +260,16 @@ class Engine:
         system_prompt: str,
         ollama_host: str = "http://localhost:11434",
         on_event: Optional[Callable[[EngineEvent], None]] = None,
+        allowed_tools: list[str] | None = None,
     ):
         self.model = model
         self.client = OllamaClient(host=ollama_host)
         self.on_event = on_event or (lambda e: None)
         self.config = load_config()
+        self.allowed_tools = allowed_tools
 
         tool_section = TOOL_INSTRUCTIONS_TEMPLATE.format(
-            tool_descriptions=build_tool_descriptions()
+            tool_descriptions=build_tool_descriptions(allowed_tools)
         )
         self.system_prompt = system_prompt + "\n\n" + tool_section
 
@@ -402,10 +406,10 @@ class Engine:
                     msg = f"OK:\n{combined_results}"
                     if had_errors:
                         msg += "\nCorrige l'erreur."
-                    elif self._repeated_writes >= 2:
-                        msg += "\nLes fichiers existent déjà. Passe à l'étape suivante (serveur, test, etc). Ne réécris PAS."
+                    elif self._repeated_writes >= 1:
+                        msg += "\nFichiers déjà créés. STOP réécriture. Lance le serveur ou vérifie. Puis TÂCHE TERMINÉE."
                     else:
-                        msg += "\nContinue: prochaine étape."
+                        msg += "\nContinue."
                     if self._step >= 20:
                         msg += f"\n[{self._step}/{self._max_steps}] FINIS."
                     self.session.add_message("user", msg)
@@ -417,7 +421,7 @@ class Engine:
                 self._consecutive_no_tools += 1
                 if self._consecutive_no_tools >= self._max_no_tools:
                     self.on_event(EngineEvent("error", {
-                        "message": "Agent ne répond plus. Session terminée.",
+                        "message": "Agent ne répond plus.",
                     }))
                     self._running = False
                 else:
@@ -584,10 +588,10 @@ class Engine:
                     msg = f"OK:\n{combined_results}"
                     if had_errors:
                         msg += "\nCorrige l'erreur."
-                    elif self._repeated_writes >= 2:
-                        msg += "\nLes fichiers existent déjà. Passe à l'étape suivante (serveur, test, etc). Ne réécris PAS."
+                    elif self._repeated_writes >= 1:
+                        msg += "\nFichiers déjà créés. STOP réécriture. Lance le serveur ou vérifie. Puis TÂCHE TERMINÉE."
                     else:
-                        msg += "\nContinue: prochaine étape."
+                        msg += "\nContinue."
                     if self._step >= 20:
                         msg += f"\n[{self._step}/{self._max_steps}] FINIS."
                     self.session.add_message("user", msg)

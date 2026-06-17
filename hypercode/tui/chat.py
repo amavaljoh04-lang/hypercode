@@ -216,6 +216,7 @@ class ChatInterface:
             system_prompt=self.agent.get_system_prompt(),
             ollama_host=self.config["ollama"]["host"],
             on_event=self._handle_event,
+            allowed_tools=self.agent.config.tools,
         )
 
     def _say(self, message: str, style: str = "italic dim white"):
