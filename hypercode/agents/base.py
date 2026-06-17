@@ -12,7 +12,7 @@ class AgentConfig:
     system_prompt: str
     tools: list[str] = field(default_factory=lambda: ["bash", "edit", "read", "write", "search", "git", "web", "todo"])
     temperature: float = 0.7
-    max_steps: int = 50
+    max_steps: int = 40
     auto_approve: bool = True
 
 

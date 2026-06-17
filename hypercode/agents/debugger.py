@@ -68,5 +68,5 @@ class DebuggerAgent(Agent):
             "todo", "think", "clipboard",
         ],
         temperature=0.3,
-        max_steps=50,
+        max_steps=30,
     )
