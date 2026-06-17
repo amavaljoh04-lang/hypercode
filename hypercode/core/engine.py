@@ -427,19 +427,30 @@ class Engine:
                         f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
-                    combined_results = _truncate_results(results)
-                    msg = f"OK:\n{combined_results}"
-                    if had_errors:
-                        msg += "\nCorrige l'erreur."
+                    # HARD STOP: if loop persists 3+ cycles, force next phase
+                    if self._repeated_writes >= 3 or (_is_cmd_loop and self._repeated_writes >= 2):
+                        self.session.add_message("user",
+                            "STOP IMMÉDIAT. Les fichiers sont créés. Exécute: "
+                            '<tool name="bash">{"command": "cd /workspace && python3 -m http.server 8888 &"}</tool> '
+                            "puis vérifie avec http GET. Puis TÂCHE TERMINÉE."
+                        )
                     elif _is_cmd_loop:
-                        msg += "\nBOUCLE DÉTECTÉE. Tu répètes la même action. Fais quelque chose de DIFFÉRENT: edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE."
+                        self.session.add_message("user",
+                            "⚠️ BOUCLE. Tu fais la MÊME chose. Action DIFFÉRENTE maintenant: "
+                            "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
                     elif self._repeated_writes >= 1:
-                        msg += "\nFichiers déjà créés. STOP réécriture. Lance le serveur ou vérifie. Puis TÂCHE TERMINÉE."
+                        self.session.add_message("user",
+                            "Fichiers déjà créés. Passe à l'étape suivante: lance le serveur ou vérifie. TÂCHE TERMINÉE si c'est bon.")
                     else:
-                        msg += "\nContinue."
-                    if self._step >= 20:
-                        msg += f"\n[{self._step}/{self._max_steps}] FINIS."
-                    self.session.add_message("user", msg)
+                        combined_results = _truncate_results(results)
+                        msg = f"OK:\n{combined_results}"
+                        if had_errors:
+                            msg += "\nCorrige l'erreur."
+                        else:
+                            msg += "\nContinue."
+                        if self._step >= 20:
+                            msg += f"\n[{self._step}/{self._max_steps}] FINIS."
+                        self.session.add_message("user", msg)
             else:
                 if task_done:
                     self._running = False
@@ -633,19 +644,29 @@ class Engine:
                         f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
-                    combined_results = _truncate_results(results)
-                    msg = f"OK:\n{combined_results}"
-                    if had_errors:
-                        msg += "\nCorrige l'erreur."
+                    if self._repeated_writes >= 3 or (_is_cmd_loop and self._repeated_writes >= 2):
+                        self.session.add_message("user",
+                            "STOP IMMÉDIAT. Les fichiers sont créés. Exécute: "
+                            '<tool name="bash">{"command": "cd /workspace && python3 -m http.server 8888 &"}</tool> '
+                            "puis vérifie avec http GET. Puis TÂCHE TERMINÉE."
+                        )
                     elif _is_cmd_loop:
-                        msg += "\nBOUCLE DÉTECTÉE. Tu répètes la même action. Fais quelque chose de DIFFÉRENT: edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE."
+                        self.session.add_message("user",
+                            "⚠️ BOUCLE. Tu fais la MÊME chose. Action DIFFÉRENTE maintenant: "
+                            "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
                     elif self._repeated_writes >= 1:
-                        msg += "\nFichiers déjà créés. STOP réécriture. Lance le serveur ou vérifie. Puis TÂCHE TERMINÉE."
+                        self.session.add_message("user",
+                            "Fichiers déjà créés. Passe à l'étape suivante: lance le serveur ou vérifie. TÂCHE TERMINÉE si c'est bon.")
                     else:
-                        msg += "\nContinue."
-                    if self._step >= 20:
-                        msg += f"\n[{self._step}/{self._max_steps}] FINIS."
-                    self.session.add_message("user", msg)
+                        combined_results = _truncate_results(results)
+                        msg = f"OK:\n{combined_results}"
+                        if had_errors:
+                            msg += "\nCorrige l'erreur."
+                        else:
+                            msg += "\nContinue."
+                        if self._step >= 20:
+                            msg += f"\n[{self._step}/{self._max_steps}] FINIS."
+                        self.session.add_message("user", msg)
             elif task_done_stream:
                 self._running = False
             else:
