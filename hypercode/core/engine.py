@@ -434,9 +434,23 @@ class Engine:
                             "NE RÉÉCRIS PLUS AUCUN FICHIER."
                         )
                     elif _is_cmd_loop:
-                        self.session.add_message("user",
-                            "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
-                            "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
+                        # Find what file is being looped on
+                        looped_file = ""
+                        from collections import Counter as _C
+                        _counts = _C(self._recent_commands[-6:])
+                        top_cmd = _counts.most_common(1)[0][0]
+                        if ":" in top_cmd:
+                            looped_file = top_cmd.split(":", 1)[1].strip()
+                        if looped_file and ("read" in top_cmd or "bash:cat" in top_cmd):
+                            self.session.add_message("user",
+                                f'⚠️ BOUCLE sur {looped_file}. Tu l\'as déjà lu. CORRIGE avec edit:\n'
+                                f'<tool name="edit">{{"file_path": "{looped_file}", '
+                                f'"old_text": "ligne_avec_bug", "new_text": "ligne_corrigée"}}</tool>\n'
+                                f'Ou réécris le fichier complet avec write. NE RELIS PLUS.')
+                        else:
+                            self.session.add_message("user",
+                                "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
+                                "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
                     elif self._repeated_writes >= 1:
                         self.session.add_message("user",
                             "Fichier déjà écrit. NE PAS réécrire. Passe à l'étape suivante.")
@@ -649,9 +663,22 @@ class Engine:
                             "NE RÉÉCRIS PLUS AUCUN FICHIER."
                         )
                     elif _is_cmd_loop:
-                        self.session.add_message("user",
-                            "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
-                            "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
+                        looped_file = ""
+                        from collections import Counter as _C2
+                        _counts2 = _C2(self._recent_commands[-6:])
+                        top_cmd2 = _counts2.most_common(1)[0][0]
+                        if ":" in top_cmd2:
+                            looped_file = top_cmd2.split(":", 1)[1].strip()
+                        if looped_file and ("read" in top_cmd2 or "bash:cat" in top_cmd2):
+                            self.session.add_message("user",
+                                f'⚠️ BOUCLE sur {looped_file}. Tu l\'as déjà lu. CORRIGE avec edit:\n'
+                                f'<tool name="edit">{{"file_path": "{looped_file}", '
+                                f'"old_text": "ligne_avec_bug", "new_text": "ligne_corrigée"}}</tool>\n'
+                                f'Ou réécris le fichier complet avec write. NE RELIS PLUS.')
+                        else:
+                            self.session.add_message("user",
+                                "⚠️ BOUCLE. Action DIFFÉRENTE maintenant: "
+                                "edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE.")
                     elif self._repeated_writes >= 1:
                         self.session.add_message("user",
                             "Fichier déjà écrit. NE PAS réécrire. Passe à l'étape suivante.")
