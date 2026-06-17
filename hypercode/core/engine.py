@@ -290,6 +290,7 @@ class Engine:
         self._repeated_writes = 0  # Detect write loops
         self._recent_commands = []  # Track last N commands for loop detection
         self._last_error = ""  # Track last error traceback for context
+        self._consecutive_blocks = 0  # Count consecutive blocked tool calls
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -416,23 +417,40 @@ class Engine:
                     # HARD SKIP: block repeated reads/bash on same target
                     tc_sig = self._get_tool_sig(tool_call)
                     if self._should_block_loop(tc_sig, tool_call):
-                        # Build specific block message with error context
+                        self._consecutive_blocks += 1
                         fp = (tool_call.arguments.get("file_path", "") or
                               tool_call.arguments.get("command", ""))
-                        # Extract file path from command if needed
                         import re as _re_block
                         _fp_match = _re_block.search(r'(/\S+\.\w+)', fp)
                         target_file = _fp_match.group(1) if _fp_match else fp
 
-                        block_msg = f"⛔ BLOQUÉ. Tu boucles sur {tool_call.name}."
-                        if self._last_error:
-                            block_msg += f"\nDernière erreur:\n{self._last_error[:300]}"
-                        block_msg += (
-                            f'\nCorrige avec:\n'
-                            f'<tool name="edit">{{"file_path": "{target_file}", '
-                            f'"old_text": "copie la ligne exacte du bug ici", '
-                            f'"new_text": "mets la ligne corrigée ici"}}</tool>'
-                        )
+                        # After 3 blocks, inject file content so model can fix without reading
+                        if self._consecutive_blocks >= 3 and target_file and os.path.isfile(target_file):
+                            try:
+                                with open(target_file) as _f:
+                                    file_content = _f.read()
+                                block_msg = (
+                                    f"⛔ BLOQUÉ x{self._consecutive_blocks}. Voici le fichier:\n"
+                                    f"```\n{file_content}\n```\n"
+                                )
+                                if self._last_error:
+                                    block_msg += f"Erreur:\n{self._last_error[:300]}\n"
+                                block_msg += (
+                                    f'CORRIGE avec edit ou réécris TOUT avec write:\n'
+                                    f'<tool name="write">{{"file_path": "{target_file}", '
+                                    f'"content": "tout le code corrigé ici"}}</tool>'
+                                )
+                            except Exception:
+                                block_msg = f"⛔ BLOQUÉ. Utilise edit ou write pour corriger {target_file}."
+                        else:
+                            block_msg = f"⛔ BLOQUÉ. Tu boucles sur {tool_call.name}."
+                            if self._last_error:
+                                block_msg += f"\nErreur:\n{self._last_error[:300]}"
+                            block_msg += (
+                                f'\nCorrige avec edit:\n'
+                                f'<tool name="edit">{{"file_path": "{target_file}", '
+                                f'"old_text": "ligne exacte du bug", "new_text": "ligne corrigée"}}</tool>'
+                            )
                         results.append(f"[{tool_call.name}] {block_msg}")
                         self.on_event(EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -441,6 +459,7 @@ class Engine:
                         }))
                         continue
 
+                    self._consecutive_blocks = 0  # Reset on successful tool execution
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
@@ -759,20 +778,38 @@ class Engine:
                     # HARD SKIP: block repeated reads/bash on same target
                     tc_sig = self._get_tool_sig(tool_call)
                     if self._should_block_loop(tc_sig, tool_call):
+                        self._consecutive_blocks += 1
                         fp2 = (tool_call.arguments.get("file_path", "") or
                                tool_call.arguments.get("command", ""))
                         import re as _re_b2
                         _fp_m2 = _re_b2.search(r'(/\S+\.\w+)', fp2)
                         tf2 = _fp_m2.group(1) if _fp_m2 else fp2
-                        block_msg = f"⛔ BLOQUÉ. Tu boucles sur {tool_call.name}."
-                        if self._last_error:
-                            block_msg += f"\nDernière erreur:\n{self._last_error[:300]}"
-                        block_msg += (
-                            f'\nCorrige avec:\n'
-                            f'<tool name="edit">{{"file_path": "{tf2}", '
-                            f'"old_text": "copie la ligne exacte du bug ici", '
-                            f'"new_text": "mets la ligne corrigée ici"}}</tool>'
-                        )
+                        if self._consecutive_blocks >= 3 and tf2 and os.path.isfile(tf2):
+                            try:
+                                with open(tf2) as _f2:
+                                    fc2 = _f2.read()
+                                block_msg = (
+                                    f"⛔ BLOQUÉ x{self._consecutive_blocks}. Voici le fichier:\n"
+                                    f"```\n{fc2}\n```\n"
+                                )
+                                if self._last_error:
+                                    block_msg += f"Erreur:\n{self._last_error[:300]}\n"
+                                block_msg += (
+                                    f'CORRIGE avec edit ou réécris TOUT avec write:\n'
+                                    f'<tool name="write">{{"file_path": "{tf2}", '
+                                    f'"content": "tout le code corrigé ici"}}</tool>'
+                                )
+                            except Exception:
+                                block_msg = f"⛔ BLOQUÉ. Utilise edit ou write."
+                        else:
+                            block_msg = f"⛔ BLOQUÉ. Tu boucles sur {tool_call.name}."
+                            if self._last_error:
+                                block_msg += f"\nErreur:\n{self._last_error[:300]}"
+                            block_msg += (
+                                f'\nCorrige avec edit:\n'
+                                f'<tool name="edit">{{"file_path": "{tf2}", '
+                                f'"old_text": "ligne du bug", "new_text": "ligne corrigée"}}</tool>'
+                            )
                         results.append(f"[{tool_call.name}] {block_msg}")
                         yield EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -781,6 +818,7 @@ class Engine:
                         })
                         continue
 
+                    self._consecutive_blocks = 0
                     yield EngineEvent("tool_call", {
                         "name": tool_call.name,
                         "arguments": tool_call.arguments,
