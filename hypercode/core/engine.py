@@ -488,7 +488,8 @@ class Engine:
 
         if is_cmd_loop and had_errors:
             _counts = _C(self._recent_commands[-6:])
-            top_cmd = _counts.most_common(1)[0][0]
+            _mc = _counts.most_common(1)
+            top_cmd = _mc[0][0] if _mc else ""
             failing_file = ""
             if "bash:" in top_cmd:
                 _m = _re.search(r'(/\S+\.\w+)', top_cmd)
@@ -507,7 +508,8 @@ class Engine:
 
         if is_cmd_loop:
             _counts = _C(self._recent_commands[-6:])
-            top_cmd = _counts.most_common(1)[0][0]
+            _mc = _counts.most_common(1)
+            top_cmd = _mc[0][0] if _mc else ""
             looped_target = top_cmd.split(":", 1)[1].strip() if ":" in top_cmd else ""
             if looped_target and ("read" in top_cmd or "bash:cat" in top_cmd):
                 self.session.add_message("user",
