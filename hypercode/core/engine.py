@@ -412,6 +412,21 @@ class Engine:
                         }))
                         continue
 
+                    # HARD SKIP: block repeated reads/bash on same target
+                    tc_sig = self._get_tool_sig(tool_call)
+                    if self._should_block_loop(tc_sig, tool_call):
+                        block_msg = (
+                            f"⛔ BLOQUÉ: tu as déjà fait {tool_call.name} sur ce fichier. "
+                            "Utilise edit pour corriger ou bash pour tester."
+                        )
+                        results.append(f"[{tool_call.name}] {block_msg}")
+                        self.on_event(EngineEvent("tool_result", {
+                            "name": tool_call.name,
+                            "success": False,
+                            "output": block_msg,
+                        }))
+                        continue
+
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
@@ -512,6 +527,37 @@ class Engine:
         if self._step >= 20:
             msg += f"\n[{self._step}/{self._max_steps}] FINIS."
         self.session.add_message("user", msg)
+
+    def _get_tool_sig(self, tool_call: "ToolCall") -> str:
+        """Get a signature string for a tool call."""
+        if tool_call.name == "bash":
+            return f"bash:{tool_call.arguments.get('command', '')}"
+        elif tool_call.name == "read":
+            return f"read:{tool_call.arguments.get('file_path', '')}"
+        elif tool_call.name == "write":
+            return f"write:{tool_call.arguments.get('file_path', '')}"
+        return f"{tool_call.name}:{str(tool_call.arguments)[:80]}"
+
+    def _should_block_loop(self, tc_sig: str, tool_call: "ToolCall") -> bool:
+        """Return True if this tool call should be blocked due to looping."""
+        from collections import Counter
+        if len(self._recent_commands) < 4:
+            return False
+        last_8 = self._recent_commands[-8:]
+        count = sum(1 for c in last_8 if c == tc_sig)
+        # Block reads on same file after 3+ reads
+        if tool_call.name == "read" and count >= 2:
+            return True
+        # Block bash cat on same file after 3+ times
+        if tool_call.name == "bash" and "cat " in tc_sig and count >= 2:
+            return True
+        # Block bash running same failing command 3+ times
+        if tool_call.name == "bash" and count >= 3:
+            return True
+        # Block writes on same file after 2+ writes
+        if tool_call.name == "write" and count >= 2:
+            return True
+        return False
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Exécute un appel d'outil."""
@@ -651,6 +697,21 @@ class Engine:
                             "name": tool_call.name,
                             "success": False,
                             "output": skip_msg,
+                        })
+                        continue
+
+                    # HARD SKIP: block repeated reads/bash on same target
+                    tc_sig = self._get_tool_sig(tool_call)
+                    if self._should_block_loop(tc_sig, tool_call):
+                        block_msg = (
+                            f"⛔ BLOQUÉ: tu as déjà fait {tool_call.name} sur ce fichier. "
+                            "Utilise edit pour corriger ou bash pour tester."
+                        )
+                        results.append(f"[{tool_call.name}] {block_msg}")
+                        yield EngineEvent("tool_result", {
+                            "name": tool_call.name,
+                            "success": False,
+                            "output": block_msg,
                         })
                         continue
 
