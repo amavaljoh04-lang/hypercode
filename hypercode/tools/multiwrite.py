@@ -17,6 +17,25 @@ class MultiWriteTool(Tool):
 
     async def execute(self, files=None, **kwargs) -> ToolResult:
         """Crée plusieurs fichiers."""
+        # Si le modèle a envoyé file_path+content (format write), traiter comme 1 fichier
+        if not files and 'file_path' in kwargs and 'content' in kwargs:
+            files = [{"path": kwargs['file_path'], "content": kwargs['content']}]
+        
+        # Si _raw est passé (JSON cassé), essayer de récupérer
+        if not files and '_raw' in kwargs:
+            raw = kwargs['_raw']
+            # Essayer d'extraire les fichiers depuis le texte brut
+            import re
+            path_matches = re.findall(r'"(?:path|file_path)"\s*:\s*"([^"]+)"', raw)
+            content_matches = re.findall(r'"content"\s*:\s*"((?:[^"\\]|\\.)*)?"', raw, re.DOTALL)
+            if path_matches:
+                files = []
+                for i, p in enumerate(path_matches):
+                    c = content_matches[i] if i < len(content_matches) else ""
+                    # Décoder les séquences d'échappement
+                    c = c.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+                    files.append({"path": p, "content": c})
+        
         if not files or not isinstance(files, list):
             return ToolResult(
                 success=False,
