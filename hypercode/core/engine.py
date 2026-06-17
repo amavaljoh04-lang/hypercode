@@ -99,6 +99,14 @@ def _parse_json_robust(text: str) -> dict:
     except (json.JSONDecodeError, ValueError):
         pass
 
+    # Essayer de réparer les newlines dans les strings JSON
+    # Le modèle écrit souvent des \n littéraux dans le contenu
+    try:
+        fixed = _fix_json_newlines(text)
+        return json.loads(fixed)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
     # Essayer de réparer : guillemets simples → doubles
     try:
         fixed = text.replace("'", '"')
@@ -106,7 +114,80 @@ def _parse_json_robust(text: str) -> dict:
     except (json.JSONDecodeError, ValueError):
         pass
 
+    # Dernier recours pour write/edit : extraire file_path et content manuellement
+    result = _extract_write_params(text)
+    if result:
+        return result
+
     return {"_raw": text}
+
+
+def _fix_json_newlines(text: str) -> str:
+    """Échappe les newlines littéraux à l'intérieur des strings JSON."""
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\':
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ch == '\n':
+            result.append('\\n')
+            continue
+        if in_string and ch == '\t':
+            result.append('\\t')
+            continue
+        result.append(ch)
+    return ''.join(result)
+
+
+def _extract_write_params(text: str) -> dict | None:
+    """Extrait file_path et content d'un JSON malformé pour write/edit."""
+    # Chercher "file_path": "..."
+    fp_match = re.search(r'"file_path"\s*:\s*"([^"]+)"', text)
+    if not fp_match:
+        return None
+
+    file_path = fp_match.group(1)
+
+    # Chercher "content": "..." — prendre tout entre le premier " après content et le dernier "
+    content_match = re.search(r'"content"\s*:\s*"', text)
+    if not content_match:
+        return None
+
+    start = content_match.end()
+    # Trouver la fin : dernière occurrence de "}  ou "} dans le texte
+    # On cherche le " fermant en tenant compte des escape
+    depth = 0
+    i = start
+    content_chars = []
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\' and i + 1 < len(text):
+            content_chars.append(ch)
+            content_chars.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            # C'est la fin du content
+            break
+        content_chars.append(ch)
+        i += 1
+
+    content = ''.join(content_chars)
+    # Décoder les séquences d'échappement
+    content = content.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+
+    return {"file_path": file_path, "content": content}
 
 
 def strip_tool_calls(text: str) -> str:
