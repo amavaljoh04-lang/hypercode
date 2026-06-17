@@ -430,6 +430,12 @@ class Engine:
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
+                    # After successful edit, allow re-reading the edited file
+                    if tool_call.name == "edit" and "ERREUR" not in result.upper():
+                        fp = tool_call.arguments.get("file_path", "")
+                        if fp:
+                            self._clear_loop_history_for_file(fp)
+
                     if "ERREUR" in result.upper() and tool_call.name in critical_tools:
                         had_errors = True
 
@@ -540,15 +546,14 @@ class Engine:
 
     def _should_block_loop(self, tc_sig: str, tool_call: "ToolCall") -> bool:
         """Return True if this tool call should be blocked due to looping."""
-        from collections import Counter
         if len(self._recent_commands) < 4:
             return False
         last_8 = self._recent_commands[-8:]
         count = sum(1 for c in last_8 if c == tc_sig)
-        # Block reads on same file after 3+ reads
+        # Block reads on same file after 2+ reads
         if tool_call.name == "read" and count >= 2:
             return True
-        # Block bash cat on same file after 3+ times
+        # Block bash cat on same file after 2+ times
         if tool_call.name == "bash" and "cat " in tc_sig and count >= 2:
             return True
         # Block bash running same failing command 3+ times
@@ -558,6 +563,13 @@ class Engine:
         if tool_call.name == "write" and count >= 2:
             return True
         return False
+
+    def _clear_loop_history_for_file(self, file_path: str):
+        """Clear loop history after a successful edit so the file can be re-read."""
+        self._recent_commands = [
+            c for c in self._recent_commands
+            if file_path not in c
+        ]
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Exécute un appel d'outil."""
@@ -727,6 +739,11 @@ class Engine:
                         "success": not is_error,
                         "output": result,
                     })
+                    # After successful edit, allow re-reading the edited file
+                    if tool_call.name == "edit" and not is_error:
+                        fp = tool_call.arguments.get("file_path", "")
+                        if fp:
+                            self._clear_loop_history_for_file(fp)
                     if is_error and tool_call.name in critical_tools:
                         had_errors = True
 
