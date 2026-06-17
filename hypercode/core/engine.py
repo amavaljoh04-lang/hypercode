@@ -391,28 +391,30 @@ class Engine:
                     result = await self._execute_tool(tool_call)
                     results.append(f"[{tool_call.name}] {result}")
 
-                    # After successful edit on .py file, auto-run it to show next error
+                    # After edit: clear loop history so file can be re-read
                     if tool_call.name == "edit" and "ERREUR" not in result.upper():
                         fp = tool_call.arguments.get("file_path", "")
                         if fp:
                             self._clear_loop_history_for_file(fp)
-                        if fp and fp.endswith(".py"):
-                            auto_run = f"python3 {fp}"
+
+                    # After read or edit on .py file, auto-run to show errors
+                    if tool_call.name in ("edit", "read", "write"):
+                        fp = tool_call.arguments.get("file_path", "")
+                        if fp and fp.endswith(".py") and "ERREUR" not in result.upper():
                             try:
-                                import asyncio as _aio
-                                proc = await _aio.create_subprocess_shell(
-                                    auto_run,
-                                    stdout=_aio.subprocess.PIPE,
-                                    stderr=_aio.subprocess.PIPE,
+                                proc = await asyncio.create_subprocess_shell(
+                                    f"python3 {fp}",
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
                                     cwd=self.session.working_dir or os.path.dirname(fp),
                                 )
-                                stdout, stderr = await _aio.wait_for(proc.communicate(), timeout=10)
+                                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
                                 auto_output = (stdout or b"").decode()[:500]
                                 auto_err = (stderr or b"").decode()[:500]
                                 if proc.returncode == 0:
-                                    auto_result = f"[auto-test] python3 OK:\n{auto_output}"
+                                    auto_result = f"[auto-test] OK:\n{auto_output}"
                                 else:
-                                    auto_result = f"[auto-test] python3 ERREUR:\n{auto_err}"
+                                    auto_result = f"[auto-test] ERREUR:\n{auto_err}"
                                 results.append(auto_result)
                                 self.on_event(EngineEvent("tool_result", {
                                     "name": "bash",
@@ -421,6 +423,7 @@ class Engine:
                                 }))
                                 if proc.returncode != 0:
                                     had_errors = True
+                                    self._last_error = auto_err[:500]
                             except Exception:
                                 pass
 
@@ -690,11 +693,15 @@ class Engine:
                         "success": not is_error,
                         "output": result,
                     })
-                    # After successful edit on .py file, auto-run it
+                    # After edit: clear loop history
                     if tool_call.name == "edit" and not is_error:
                         fp = tool_call.arguments.get("file_path", "")
                         if fp:
                             self._clear_loop_history_for_file(fp)
+
+                    # After read/edit/write on .py file, auto-run to show errors
+                    if tool_call.name in ("edit", "read", "write") and not is_error:
+                        fp = tool_call.arguments.get("file_path", "")
                         if fp and fp.endswith(".py"):
                             try:
                                 proc = await asyncio.create_subprocess_shell(
@@ -718,6 +725,7 @@ class Engine:
                                 })
                                 if proc.returncode != 0:
                                     had_errors = True
+                                    self._last_error = auto_err[:500]
                             except Exception:
                                 pass
                     if is_error and tool_call.name in critical_tools:
