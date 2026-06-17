@@ -14,41 +14,21 @@ from hypercode.config import load_config
 
 
 TOOL_INSTRUCTIONS_TEMPLATE = (
-    "\n\n---\n"
-    "# OUTILS\n\n"
-    "⚠️ TOUTE action = bloc <tool>. Code dans ta réponse = texte mort, JAMAIS sauvegardé.\n\n"
-    "Format : <tool name=\"NOM\">{{\"param\": \"val\"}}</tool>\n\n"
-    "Exemples :\n"
-    '<tool name="write">{{"file_path": "/workspace/index.html", "content": "<!DOCTYPE html>\\n<html>\\n<body>Hello</body>\\n</html>"}}</tool>\n'
-    '<tool name="bash">{{"command": "mkdir -p /workspace/mon-projet"}}</tool>\n\n'
-    "## Outils disponibles\n\n"
-    "{tool_descriptions}\n\n"
-    "## Règles\n"
-    "1. Chaque action = <tool>. Pas de <tool> = pas d'action.\n"
-    "2. Max 3 <tool> par réponse. Attends les résultats.\n"
-    "3. PAS de ``` autour des <tool>.\n"
-    "4. Fin = TÂCHE TERMINÉE (uniquement après vérification).\n"
-    "5. ⛔ JAMAIS de code dans le texte. TOUJOURS dans <tool name=\"write\">.\n"
-    "---\n"
+    "\nOutils: {tool_descriptions}\n"
 )
 
-# Messages de rappel quand le modèle n'utilise pas les outils
 NUDGE_MESSAGES = [
-    "⚠️ Pas d'outil détecté. Utilise <tool name=\"write\"> ou <tool name=\"bash\"> MAINTENANT. Continue ta tâche.",
-    "URGENT : Écris un bloc <tool> pour la prochaine action. Ou TÂCHE TERMINÉE si fini.",
-    "DERNIER RAPPEL : <tool name=\"bash\">{\"command\": \"ls\"}</tool> — Utilise ce format ou dis TÂCHE TERMINÉE.",
+    "Utilise <tool> MAINTENANT ou dis TÂCHE TERMINÉE.",
+    '<tool name="bash">{"command": "ls"}</tool> — ce format. Ou TÂCHE TERMINÉE.',
 ]
 
 
 def build_tool_descriptions() -> str:
-    """Génère la description COMPACTE des outils pour le prompt."""
+    """Génère la description ultra-compacte des outils."""
     descriptions = []
     for tool in ALL_TOOLS:
-        params = ", ".join(
-            f"{k}{'*' if v.get('required') else ''}"
-            for k, v in tool.parameters.items()
-        )
-        descriptions.append(f"- **{tool.name}**({params}) — {tool.description}")
+        params = ", ".join(tool.parameters.keys())
+        descriptions.append(f"- {tool.name}({params})")
     return "\n".join(descriptions)
 
 
@@ -251,15 +231,15 @@ def is_task_complete(text: str) -> bool:
     return any(m.upper() in upper for m in markers)
 
 
-def _truncate_results(results: list[str], max_per_result: int = 500) -> str:
-    """Tronque les résultats des outils pour économiser du contexte."""
+def _truncate_results(results: list[str], max_per_result: int = 300) -> str:
+    """Tronque les résultats pour économiser du contexte."""
     truncated = []
     for r in results:
         if len(r) > max_per_result:
-            truncated.append(r[:max_per_result] + "...[tronqué]")
+            truncated.append(r[:max_per_result] + "...")
         else:
             truncated.append(r)
-    return "\n---\n".join(truncated)
+    return "\n".join(truncated)
 
 
 @dataclass
@@ -319,9 +299,7 @@ class Engine:
             # Après 25 étapes, forcer le modèle à conclure
             if self._step == 25:
                 self.session.add_message("user",
-                    "⚠️ Tu as déjà fait 25 étapes. TERMINE maintenant. "
-                    "Vérifie que les fichiers principaux existent avec <tool name=\"tree\"> "
-                    "et lance le serveur si nécessaire. Puis dis TÂCHE TERMINÉE."
+                    "STOP. Vérifie et dis TÂCHE TERMINÉE maintenant."
                 )
 
             self.on_event(EngineEvent("status", {
@@ -342,6 +320,7 @@ class Engine:
                     tools=None,
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
+                    num_predict=4096,
                 )
             except Exception as e:
                 self.on_event(EngineEvent("error", {"message": str(e)}))
@@ -398,43 +377,30 @@ class Engine:
                 elif task_done and had_errors:
                     combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"⚠️ Tu as dit TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n\n"
-                        "La tâche N'EST PAS terminée. Corrige les erreurs et réessaie. "
-                        "Utilise <tool name=\"bash\"> pour créer les répertoires manquants (mkdir -p)."
+                        f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
                     combined_results = _truncate_results(results)
-                    error_hint = ""
+                    msg = f"OK:\n{combined_results}"
                     if had_errors:
-                        error_hint = (
-                            "\n⚠️ Des erreurs se sont produites. CORRIGE-LES. "
-                            "mkdir -p pour créer les répertoires manquants."
-                        )
-                    step_hint = ""
-                    if self._step >= 15:
-                        step_hint = f" (étape {self._step}/{self._max_steps} — pense à finir bientôt)"
-                    self.session.add_message("user",
-                        f"Résultats :\n{combined_results}\n{error_hint}\n"
-                        f"Continue{step_hint}. Code dans <tool name=\"write\">, JAMAIS dans le texte."
-                    )
+                        msg += "\nERREUR — corrige."
+                    if self._step >= 20:
+                        msg += f"\n[{self._step}/{self._max_steps}] Finis bientôt."
+                    self.session.add_message("user", msg)
             else:
-                # Pas de tool calls détectés
                 if task_done:
                     self._running = False
                     continue
 
-                # Réponse vide ou sans outils
                 self._consecutive_no_tools += 1
-
                 if self._consecutive_no_tools >= self._max_no_tools:
                     self.on_event(EngineEvent("error", {
-                        "message": "L'agent ne répond plus avec des outils après plusieurs rappels. Session terminée.",
+                        "message": "Agent ne répond plus. Session terminée.",
                     }))
                     self._running = False
                 else:
                     nudge_idx = min(self._consecutive_no_tools - 1, len(NUDGE_MESSAGES) - 1)
-                    nudge = NUDGE_MESSAGES[nudge_idx]
-                    self.session.add_message("user", nudge)
+                    self.session.add_message("user", NUDGE_MESSAGES[nudge_idx])
 
         if self._step >= self._max_steps:
             self.on_event(EngineEvent("error", {
@@ -506,9 +472,7 @@ class Engine:
             # Après 25 étapes, forcer le modèle à conclure
             if self._step == 25:
                 self.session.add_message("user",
-                    "⚠️ Tu as déjà fait 25 étapes. TERMINE maintenant. "
-                    "Vérifie que les fichiers principaux existent avec <tool name=\"tree\"> "
-                    "et lance le serveur si nécessaire. Puis dis TÂCHE TERMINÉE."
+                    "STOP. Vérifie et dis TÂCHE TERMINÉE maintenant."
                 )
 
             try:
@@ -521,6 +485,7 @@ class Engine:
                     tools=None,
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
+                    num_predict=4096,
                 )
             except Exception as e:
                 yield EngineEvent("error", {"message": str(e)})
@@ -573,27 +538,22 @@ class Engine:
                 elif task_done_stream and had_errors:
                     combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"⚠️ TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n"
-                        "Corrige les erreurs. mkdir -p avant write."
+                        f"ERREURS:\n{combined_results}\nCorrige."
                     )
                 else:
                     combined_results = _truncate_results(results)
-                    error_hint = ""
+                    msg = f"OK:\n{combined_results}"
                     if had_errors:
-                        error_hint = "\n⚠️ ERREURS — corrige avant de continuer."
-                    step_hint = ""
-                    if self._step >= 15:
-                        step_hint = f" (étape {self._step}/{self._max_steps} — pense à finir bientôt)"
-                    self.session.add_message("user",
-                        f"Résultats :\n{combined_results}\n{error_hint}\n"
-                        f"Continue{step_hint}. Code dans <tool name=\"write\">, JAMAIS dans le texte."
-                    )
+                        msg += "\nERREUR — corrige."
+                    if self._step >= 20:
+                        msg += f"\n[{self._step}/{self._max_steps}] Finis bientôt."
+                    self.session.add_message("user", msg)
             elif task_done_stream:
                 self._running = False
             else:
                 self._consecutive_no_tools += 1
                 if self._consecutive_no_tools >= self._max_no_tools:
-                    yield EngineEvent("error", {"message": "L'agent ne répond plus avec des outils."})
+                    yield EngineEvent("error", {"message": "Agent ne répond plus."})
                     self._running = False
                 else:
                     nudge_idx = min(self._consecutive_no_tools - 1, len(NUDGE_MESSAGES) - 1)

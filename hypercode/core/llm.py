@@ -83,6 +83,7 @@ class OllamaClient:
         tools: Optional[list[dict]] = None,
         temperature: float = 0.7,
         num_ctx: int = 16384,
+        num_predict: int = 4096,
     ) -> LLMResponse:
         """Envoie un message et attend la réponse complète."""
         payload = {
@@ -92,6 +93,7 @@ class OllamaClient:
             "options": {
                 "temperature": temperature,
                 "num_ctx": num_ctx,
+                "num_predict": num_predict,
             },
         }
         if tools:
