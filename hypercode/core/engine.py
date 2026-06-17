@@ -378,12 +378,7 @@ class Engine:
                     tc_sig = self._get_tool_sig(tool_call)
                     if self._should_block_loop(tc_sig, tool_call):
                         self._consecutive_blocks += 1
-                        block_msg = (
-                            f"⛔ BOUCLE DÉTECTÉE ({tool_call.name} x3). "
-                            f"Fais une action DIFFÉRENTE ou dis TÂCHE TERMINÉE."
-                        )
-                        if self._last_error:
-                            block_msg += f"\nDernière erreur: {self._last_error[:200]}"
+                        block_msg = self._build_doom_loop_message(tool_call)
                         results.append(f"[{tool_call.name}] {block_msg}")
                         self.on_event(EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -486,14 +481,57 @@ class Engine:
         return False
 
     def _get_tool_sig(self, tool_call: "ToolCall") -> str:
-        """Get a signature string for a tool call."""
+        """Get a signature string for a tool call. Normalizes read-like commands."""
         if tool_call.name == "bash":
-            return f"bash:{tool_call.arguments.get('command', '')}"
+            cmd = tool_call.arguments.get("command", "")
+            # Normalize: cat/cat -n/head/tail on same file → same signature
+            m = re.match(r'(cat|head|tail)\s+(?:-[a-z]+\s+)*(/\S+)', cmd)
+            if m:
+                return f"read:{m.group(2)}"
+            return f"bash:{cmd}"
         elif tool_call.name == "read":
             return f"read:{tool_call.arguments.get('file_path', '')}"
         elif tool_call.name == "write":
             return f"write:{tool_call.arguments.get('file_path', '')}"
         return f"{tool_call.name}:{str(tool_call.arguments)[:80]}"
+
+    def _build_doom_loop_message(self, tool_call: "ToolCall") -> str:
+        """Build context-aware doom loop message. If blocking a read, inject file content."""
+        fp = tool_call.arguments.get("file_path", "")
+        cmd = tool_call.arguments.get("command", "")
+        
+        # Extract file path from bash cat commands
+        if not fp and cmd:
+            m = re.search(r'cat\s+(?:-n\s+)?(/\S+)', cmd)
+            if m:
+                fp = m.group(1)
+        
+        # If blocking a read/cat and file exists, inject its content
+        is_read = tool_call.name == "read" or (tool_call.name == "bash" and "cat " in cmd)
+        if is_read and fp and os.path.isfile(fp):
+            try:
+                with open(fp) as f:
+                    content = f.read()
+                if len(content) > 3000:
+                    content = content[:3000] + "\n...[tronqué]"
+                msg = f"⛔ BOUCLE. Voici le contenu de {fp}:\n```\n{content}\n```\n"
+                if self._last_error:
+                    msg += f"Dernière erreur: {self._last_error[:300]}\n"
+                msg += (
+                    f'Utilise edit pour corriger:\n'
+                    f'<tool name="edit">{{"file_path": "{fp}", '
+                    f'"old_text": "ligne exacte à corriger", '
+                    f'"new_text": "ligne corrigée"}}</tool>'
+                )
+                return msg
+            except Exception:
+                pass
+        
+        # Generic doom loop message
+        msg = f"⛔ BOUCLE DÉTECTÉE ({tool_call.name} x3). Fais une action DIFFÉRENTE."
+        if self._last_error:
+            msg += f"\nDernière erreur: {self._last_error[:200]}"
+        return msg
 
     def _should_block_loop(self, tc_sig: str, tool_call: "ToolCall") -> bool:
         """Return True if this tool call should be blocked (doom loop detected)."""
@@ -612,12 +650,7 @@ class Engine:
                     tc_sig = self._get_tool_sig(tool_call)
                     if self._should_block_loop(tc_sig, tool_call):
                         self._consecutive_blocks += 1
-                        block_msg = (
-                            f"⛔ BOUCLE DÉTECTÉE ({tool_call.name} x3). "
-                            f"Fais une action DIFFÉRENTE ou dis TÂCHE TERMINÉE."
-                        )
-                        if self._last_error:
-                            block_msg += f"\nDernière erreur: {self._last_error[:200]}"
+                        block_msg = self._build_doom_loop_message(tool_call)
                         results.append(f"[{tool_call.name}] {block_msg}")
                         yield EngineEvent("tool_result", {
                             "name": tool_call.name,
