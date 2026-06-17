@@ -8,101 +8,48 @@ from typing import Callable, Optional
 from dataclasses import dataclass
 
 from hypercode.core.llm import OllamaClient, Message, LLMResponse, ToolCall
-from hypercode.core.memory import Session, generate_session_id
+from hypercode.core.memory import Session, generate_session_id, truncate_content
 from hypercode.tools import get_tool_by_name, ALL_TOOLS
 from hypercode.config import load_config
 
 
 TOOL_INSTRUCTIONS_TEMPLATE = (
     "\n\n---\n"
-    "# SYSTÈME D'OUTILS — LECTURE OBLIGATOIRE\n\n"
-    "⚠️ ATTENTION : Tu ne peux PAS agir sans utiliser les outils. "
-    "Écrire du code dans ta réponse NE FAIT RIEN. "
-    "Seuls les blocs <tool> ci-dessous permettent de créer des fichiers, exécuter des commandes, etc.\n\n"
-    "## Comment utiliser un outil\n\n"
-    "Écris ce format EXACT (pas dans un bloc de code markdown) :\n\n"
-    '<tool name="nom_outil">\n'
-    '{{"param": "valeur"}}\n'
-    "</tool>\n\n"
-    "## Exemples — COPIE CE FORMAT\n\n"
-    "Pour créer un fichier :\n\n"
-    '<tool name="write">\n'
-    '{{"file_path": "/workspace/index.html", "content": "<!DOCTYPE html>\\n<html>\\n<body>Hello</body>\\n</html>"}}\n'
-    "</tool>\n\n"
-    "Pour exécuter une commande :\n\n"
-    '<tool name="bash">\n'
-    '{{"command": "cd /workspace && python3 -m http.server 8888"}}\n'
-    "</tool>\n\n"
-    "Pour lire un fichier :\n\n"
-    '<tool name="read">\n'
-    '{{"file_path": "/workspace/app.py"}}\n'
-    "</tool>\n\n"
-    "Pour chercher sur le web :\n\n"
-    '<tool name="web">\n'
-    '{{"action": "search", "query": "css glassmorphism tutorial 2025"}}\n'
-    "</tool>\n\n"
-    "Pour voir l'arborescence :\n\n"
-    '<tool name="tree">\n'
-    '{{"path": "/workspace"}}\n'
-    "</tool>\n\n"
-    "## Tous les outils disponibles\n\n"
+    "# OUTILS\n\n"
+    "⚠️ TOUTE action = bloc <tool>. Code dans ta réponse = texte mort, JAMAIS sauvegardé.\n\n"
+    "Format : <tool name=\"NOM\">{{\"param\": \"val\"}}</tool>\n\n"
+    "Exemples :\n"
+    '<tool name="write">{{"file_path": "/workspace/index.html", "content": "<!DOCTYPE html>\\n<html>\\n<body>Hello</body>\\n</html>"}}</tool>\n'
+    '<tool name="bash">{{"command": "mkdir -p /workspace/mon-projet"}}</tool>\n\n'
+    "## Outils disponibles\n\n"
     "{tool_descriptions}\n\n"
-    "## Règles ABSOLUES\n"
-    "1. CHAQUE action = un bloc <tool>. Pas de bloc = pas d'action.\n"
-    "2. Tu peux mettre PLUSIEURS <tool> dans une même réponse.\n"
-    "3. N'encadre PAS les blocs <tool> dans des balises markdown ``` — écris-les directement.\n"
-    "4. Quand ta tâche est TERMINÉE, écris le mot exact : TÂCHE TERMINÉE\n"
-    "5. Tant que tu n'as PAS écrit TÂCHE TERMINÉE, tu DOIS continuer à travailler en utilisant les outils.\n"
-    "6. ⛔ N'écris JAMAIS du code (HTML/CSS/JS/Python) dans ta réponse texte. C'est du texte mort. Utilise TOUJOURS <tool name=\"write\"> pour créer un fichier.\n"
-    "7. Pour les GROS fichiers (>20 lignes), utilise <tool name=\"write\"> individuellement pour CHAQUE fichier. N'utilise PAS multiwrite pour du gros contenu.\n"
+    "## Règles\n"
+    "1. Chaque action = <tool>. Pas de <tool> = pas d'action.\n"
+    "2. Max 3 <tool> par réponse. Attends les résultats.\n"
+    "3. PAS de ``` autour des <tool>.\n"
+    "4. Fin = TÂCHE TERMINÉE (uniquement après vérification).\n"
+    "5. ⛔ JAMAIS de code dans le texte. TOUJOURS dans <tool name=\"write\">.\n"
     "---\n"
 )
 
 # Messages de rappel quand le modèle n'utilise pas les outils
 NUDGE_MESSAGES = [
-    (
-        "⚠️ Tu n'as pas utilisé d'outil dans ta dernière réponse. "
-        "Tu DOIS utiliser les blocs <tool> pour agir. Voici un rappel :\n\n"
-        "Pour créer un fichier, écris directement (PAS dans un bloc ```) :\n\n"
-        '<tool name="write">\n'
-        '{"file_path": "/chemin/fichier", "content": "contenu du fichier"}\n'
-        "</tool>\n\n"
-        "Pour exécuter une commande :\n\n"
-        '<tool name="bash">\n'
-        '{"command": "ta commande ici"}\n'
-        "</tool>\n\n"
-        "Continue ta tâche en utilisant ces outils MAINTENANT."
-    ),
-    (
-        "RAPPEL URGENT : Ta réponse précédente ne contenait aucun outil. "
-        "Tu DOIS utiliser le format <tool name=\"...\"> pour agir. "
-        "Quelle est la PROCHAINE action concrète ? Écris un bloc <tool> maintenant. "
-        "Si tu as terminé, écris : TÂCHE TERMINÉE"
-    ),
-    (
-        "DERNIÈRE CHANCE : Utilise un outil <tool> ou écris TÂCHE TERMINÉE. "
-        "Exemple : <tool name=\"bash\">\n{\"command\": \"ls\"}\n</tool>"
-    ),
-    (
-        "Tu dois agir avec <tool> ou dire TÂCHE TERMINÉE. Rien d'autre ne fonctionne."
-    ),
+    "⚠️ Pas d'outil détecté. Utilise <tool name=\"write\"> ou <tool name=\"bash\"> MAINTENANT. Continue ta tâche.",
+    "URGENT : Écris un bloc <tool> pour la prochaine action. Ou TÂCHE TERMINÉE si fini.",
+    "DERNIER RAPPEL : <tool name=\"bash\">{\"command\": \"ls\"}</tool> — Utilise ce format ou dis TÂCHE TERMINÉE.",
 ]
 
 
 def build_tool_descriptions() -> str:
-    """Génère la description des outils pour le prompt."""
+    """Génère la description COMPACTE des outils pour le prompt."""
     descriptions = []
     for tool in ALL_TOOLS:
-        params_desc = []
-        for pname, pinfo in tool.parameters.items():
-            required = " (REQUIS)" if pinfo.get("required") else ""
-            params_desc.append(f"    - {pname}: {pinfo.get('description', '')}{required}")
-
-        descriptions.append(
-            f"**{tool.name}** — {tool.description}\n"
-            f"  Paramètres:\n" + "\n".join(params_desc)
+        params = ", ".join(
+            f"{k}{'*' if v.get('required') else ''}"
+            for k, v in tool.parameters.items()
         )
-    return "\n\n".join(descriptions)
+        descriptions.append(f"- **{tool.name}**({params}) — {tool.description}")
+    return "\n".join(descriptions)
 
 
 def parse_tool_calls(text: str) -> list[ToolCall]:
@@ -185,6 +132,17 @@ def is_task_complete(text: str) -> bool:
     return any(m.upper() in upper for m in markers)
 
 
+def _truncate_results(results: list[str], max_per_result: int = 500) -> str:
+    """Tronque les résultats des outils pour économiser du contexte."""
+    truncated = []
+    for r in results:
+        if len(r) > max_per_result:
+            truncated.append(r[:max_per_result] + "...[tronqué]")
+        else:
+            truncated.append(r)
+    return "\n---\n".join(truncated)
+
+
 @dataclass
 class EngineEvent:
     """Événement émis par le moteur."""
@@ -247,9 +205,12 @@ class Engine:
 
             start_time = time.time()
             try:
+                messages = self.session.get_messages_for_llm(
+                    max_tokens=self.config["ollama"]["context_length"] - 2000
+                )
                 response = await self.client.chat(
                     model=self.model,
-                    messages=self.session.get_messages_for_llm(),
+                    messages=messages,
                     tools=None,
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
@@ -307,24 +268,23 @@ class Engine:
                 if task_done and not had_errors:
                     self._running = False
                 elif task_done and had_errors:
-                    # Le modèle dit terminé mais des outils ont échoué
-                    combined_results = "\n---\n".join(results)
+                    combined_results = _truncate_results(results)
                     self.session.add_message("user",
                         f"⚠️ Tu as dit TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n\n"
                         "La tâche N'EST PAS terminée. Corrige les erreurs et réessaie. "
-                        "Utilise <tool name=\"bash\"> pour créer les répertoires manquants (mkdir -p) avant d'écrire les fichiers."
+                        "Utilise <tool name=\"bash\"> pour créer les répertoires manquants (mkdir -p)."
                     )
                 else:
-                    combined_results = "\n---\n".join(results)
+                    combined_results = _truncate_results(results)
                     error_hint = ""
                     if had_errors:
                         error_hint = (
-                            "\n⚠️ Des erreurs se sont produites. Analyse les erreurs ci-dessus et CORRIGE-LES. "
-                            "Si c'est un problème de permission, utilise <tool name=\"bash\">{\"command\": \"mkdir -p /chemin\"}</tool> d'abord. "
+                            "\n⚠️ Des erreurs se sont produites. CORRIGE-LES. "
+                            "mkdir -p pour créer les répertoires manquants."
                         )
                     self.session.add_message("user",
-                        f"Résultats des outils :\n{combined_results}\n{error_hint}\n"
-                        "Continue. TOUT le code dans <tool name=\"write\">, JAMAIS dans la réponse texte."
+                        f"Résultats :\n{combined_results}\n{error_hint}\n"
+                        "Continue. Code dans <tool name=\"write\">, JAMAIS dans le texte."
                     )
             else:
                 # Pas de tool calls détectés
@@ -414,9 +374,12 @@ class Engine:
             self._step += 1
 
             try:
+                messages = self.session.get_messages_for_llm(
+                    max_tokens=self.config["ollama"]["context_length"] - 2000
+                )
                 response = await self.client.chat(
                     model=self.model,
-                    messages=self.session.get_messages_for_llm(),
+                    messages=messages,
                     tools=None,
                     temperature=self.config["ollama"]["temperature"],
                     num_ctx=self.config["ollama"]["context_length"],
@@ -470,23 +433,19 @@ class Engine:
                 if task_done_stream and not had_errors:
                     self._running = False
                 elif task_done_stream and had_errors:
-                    combined_results = "\n---\n".join(results)
+                    combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"⚠️ Tu as dit TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n\n"
-                        "La tâche N'EST PAS terminée. Corrige les erreurs et réessaie. "
-                        "Utilise <tool name=\"bash\"> pour créer les répertoires manquants (mkdir -p)."
+                        f"⚠️ TÂCHE TERMINÉE mais des outils ont ÉCHOUÉ :\n{combined_results}\n"
+                        "Corrige les erreurs. mkdir -p avant write."
                     )
                 else:
-                    combined_results = "\n---\n".join(results)
+                    combined_results = _truncate_results(results)
                     error_hint = ""
                     if had_errors:
-                        error_hint = (
-                            "\n⚠️ Des erreurs se sont produites. CORRIGE-LES avant de continuer. "
-                            "mkdir -p pour créer les répertoires manquants."
-                        )
+                        error_hint = "\n⚠️ ERREURS — corrige avant de continuer."
                     self.session.add_message("user",
-                        f"Résultats des outils :\n{combined_results}\n{error_hint}\n"
-                        "Continue. TOUT le code dans <tool name=\"write\">, JAMAIS dans la réponse texte."
+                        f"Résultats :\n{combined_results}\n{error_hint}\n"
+                        "Continue. Code dans <tool name=\"write\">, JAMAIS dans le texte."
                     )
             elif task_done_stream:
                 self._running = False

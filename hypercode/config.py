@@ -11,7 +11,7 @@ DEFAULT_CONFIG = {
         "host": "http://localhost:11434",
         "model": None,
         "context_length": 16384,
-        "temperature": 0.7,
+        "temperature": 0.4,
     },
     "agent": {
         "default": "coder",
