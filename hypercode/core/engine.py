@@ -282,6 +282,8 @@ class Engine:
         self._max_steps = 40
         self._consecutive_no_tools = 0
         self._max_no_tools = len(NUDGE_MESSAGES) + 1
+        self._files_written = set()  # Track files already created
+        self._repeated_writes = 0  # Detect write loops
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -353,10 +355,27 @@ class Engine:
                 had_errors = False
                 critical_tools = {"write", "multiwrite", "bash", "edit", "patch", "replace"}
 
+                # Track writes for loop detection
+                new_files = set()
+                for tc in tool_calls:
+                    if tc.name in ("write", "multiwrite"):
+                        fp = tc.arguments.get("file_path", "")
+                        if fp:
+                            new_files.add(fp)
+                        for f in tc.arguments.get("files", []):
+                            if isinstance(f, dict):
+                                new_files.add(f.get("path", "") or f.get("file_path", ""))
+
+                # Detect repeated writes (same files already written)
+                if new_files and new_files.issubset(self._files_written):
+                    self._repeated_writes += 1
+                else:
+                    self._repeated_writes = 0
+                    self._files_written.update(new_files)
+
                 for tool_call in tool_calls:
-                    # Si un outil critique a échoué, ne pas exécuter les suivants
                     if had_errors and tool_call.name in critical_tools:
-                        skip_msg = f"[IGNORÉ — erreur précédente] {tool_call.name}"
+                        skip_msg = f"[IGNORÉ] {tool_call.name}"
                         results.append(f"[{tool_call.name}] {skip_msg}")
                         self.on_event(EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -371,7 +390,6 @@ class Engine:
                     if "ERREUR" in result.upper() and tool_call.name in critical_tools:
                         had_errors = True
 
-                # Si tâche "terminée" mais avec des erreurs → forcer la continuation
                 if task_done and not had_errors:
                     self._running = False
                 elif task_done and had_errors:
@@ -383,9 +401,13 @@ class Engine:
                     combined_results = _truncate_results(results)
                     msg = f"OK:\n{combined_results}"
                     if had_errors:
-                        msg += "\nERREUR — corrige."
+                        msg += "\nCorrige l'erreur."
+                    elif self._repeated_writes >= 2:
+                        msg += "\nLes fichiers existent déjà. Passe à l'étape suivante (serveur, test, etc). Ne réécris PAS."
+                    else:
+                        msg += "\nContinue: prochaine étape."
                     if self._step >= 20:
-                        msg += f"\n[{self._step}/{self._max_steps}] Finis bientôt."
+                        msg += f"\n[{self._step}/{self._max_steps}] FINIS."
                     self.session.add_message("user", msg)
             else:
                 if task_done:
@@ -507,9 +529,26 @@ class Engine:
                 had_errors = False
                 critical_tools = {"write", "multiwrite", "bash", "edit", "patch", "replace"}
 
+                # Track writes for loop detection
+                new_files = set()
+                for tc in tool_calls:
+                    if tc.name in ("write", "multiwrite"):
+                        fp = tc.arguments.get("file_path", "")
+                        if fp:
+                            new_files.add(fp)
+                        for f in tc.arguments.get("files", []):
+                            if isinstance(f, dict):
+                                new_files.add(f.get("path", "") or f.get("file_path", ""))
+
+                if new_files and new_files.issubset(self._files_written):
+                    self._repeated_writes += 1
+                else:
+                    self._repeated_writes = 0
+                    self._files_written.update(new_files)
+
                 for tool_call in tool_calls:
                     if had_errors and tool_call.name in critical_tools:
-                        skip_msg = f"[IGNORÉ — erreur précédente] {tool_call.name}"
+                        skip_msg = f"[IGNORÉ] {tool_call.name}"
                         results.append(f"[{tool_call.name}] {skip_msg}")
                         yield EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -544,9 +583,13 @@ class Engine:
                     combined_results = _truncate_results(results)
                     msg = f"OK:\n{combined_results}"
                     if had_errors:
-                        msg += "\nERREUR — corrige."
+                        msg += "\nCorrige l'erreur."
+                    elif self._repeated_writes >= 2:
+                        msg += "\nLes fichiers existent déjà. Passe à l'étape suivante (serveur, test, etc). Ne réécris PAS."
+                    else:
+                        msg += "\nContinue: prochaine étape."
                     if self._step >= 20:
-                        msg += f"\n[{self._step}/{self._max_steps}] Finis bientôt."
+                        msg += f"\n[{self._step}/{self._max_steps}] FINIS."
                     self.session.add_message("user", msg)
             elif task_done_stream:
                 self._running = False
