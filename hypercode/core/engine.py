@@ -57,7 +57,6 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
     tool_calls = []
 
     # Étape 1 : Retirer les balises markdown ``` qui entourent des blocs <tool>
-    # Le modèle fait souvent : ```\n<tool name="bash">...\n</tool>\n```
     cleaned = re.sub(r'```[a-z]*\s*\n?(<tool\s+name=)', r'\1', text, flags=re.IGNORECASE)
     cleaned = re.sub(r'(</tool>)\s*\n?```', r'\1', cleaned, flags=re.IGNORECASE)
 
@@ -68,19 +67,53 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
     for i, match in enumerate(matches):
         name = match.group(1).strip()
         args_str = match.group(2).strip()
-
-        # Nettoyer les backticks qui traînent dans le JSON
         args_str = args_str.strip('`').strip()
-
         arguments = _parse_json_robust(args_str)
-
         tool_calls.append(ToolCall(
             id=f"call_{i}",
             name=name,
             arguments=arguments,
         ))
 
+    # Étape 3 : Détecter les JSON bruts (sans <tool> wrapper)
+    # Le modèle écrit parfois juste {"file_path": "...", "content": "..."} dans le texte
+    if not tool_calls:
+        bare_calls = _detect_bare_json_tools(text)
+        tool_calls.extend(bare_calls)
+
     return tool_calls
+
+
+def _detect_bare_json_tools(text: str) -> list[ToolCall]:
+    """Détecte les appels d'outils JSON bruts sans balise <tool>."""
+    calls = []
+    # Chercher les patterns JSON qui ressemblent à des write/bash/edit
+    # Pattern: {"file_path": "...", "content": "..."} ou {"command": "..."}
+    json_pattern = r'\{\s*"(file_path|command|action)"\s*:'
+    for match in re.finditer(json_pattern, text):
+        # Extraire le JSON complet à partir de cette position
+        start = match.start()
+        # Trouver l'objet JSON
+        brace_count = 0
+        end = start
+        for j in range(start, len(text)):
+            if text[j] == '{':
+                brace_count += 1
+            elif text[j] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end = j + 1
+                    break
+        if end > start:
+            json_str = text[start:end]
+            args = _parse_json_robust(json_str)
+            if '_raw' not in args:
+                # Déterminer le type d'outil
+                if 'file_path' in args and 'content' in args:
+                    calls.append(ToolCall(id=f"bare_{len(calls)}", name="write", arguments=args))
+                elif 'command' in args:
+                    calls.append(ToolCall(id=f"bare_{len(calls)}", name="bash", arguments=args))
+    return calls
 
 
 def _parse_json_robust(text: str) -> dict:
@@ -191,11 +224,16 @@ def _extract_write_params(text: str) -> dict | None:
 
 
 def strip_tool_calls(text: str) -> str:
-    """Retire les blocs <tool> du texte pour l'affichage."""
+    """Retire les blocs <tool> et les JSON bruts du texte pour l'affichage."""
     # D'abord retirer les blocs <tool> entourés de ```
     cleaned = re.sub(r'```[a-z]*\s*\n?\s*<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>\s*\n?\s*```', '', text, flags=re.DOTALL)
     # Puis retirer les blocs <tool> seuls
     cleaned = re.sub(r'<tool\s+name=["\'][^"\']+["\']>\s*.*?\s*</tool>', '', cleaned, flags=re.DOTALL)
+    # Retirer les JSON bruts qui sont des tool calls détectés
+    # Pattern: {"file_path": "...", "content": "...(très long)"}
+    cleaned = re.sub(r'\{\s*"file_path"\s*:.*?"content"\s*:.*\}', '', cleaned, flags=re.DOTALL)
+    # Pattern: {"command": "..."}
+    cleaned = re.sub(r'\{\s*"command"\s*:.*?\}', '', cleaned, flags=re.DOTALL)
     return cleaned.strip()
 
 
@@ -261,9 +299,9 @@ class Engine:
 
         self._running = False
         self._step = 0
-        self._max_steps = 80
+        self._max_steps = 40
         self._consecutive_no_tools = 0
-        self._max_no_tools = len(NUDGE_MESSAGES) + 1  # 5 chances avant d'abandonner
+        self._max_no_tools = len(NUDGE_MESSAGES) + 1
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -277,6 +315,15 @@ class Engine:
 
         while self._running and self._step < self._max_steps:
             self._step += 1
+
+            # Après 25 étapes, forcer le modèle à conclure
+            if self._step == 25:
+                self.session.add_message("user",
+                    "⚠️ Tu as déjà fait 25 étapes. TERMINE maintenant. "
+                    "Vérifie que les fichiers principaux existent avec <tool name=\"tree\"> "
+                    "et lance le serveur si nécessaire. Puis dis TÂCHE TERMINÉE."
+                )
+
             self.on_event(EngineEvent("status", {
                 "step": self._step,
                 "message": f"Étape {self._step}...",
@@ -363,9 +410,12 @@ class Engine:
                             "\n⚠️ Des erreurs se sont produites. CORRIGE-LES. "
                             "mkdir -p pour créer les répertoires manquants."
                         )
+                    step_hint = ""
+                    if self._step >= 15:
+                        step_hint = f" (étape {self._step}/{self._max_steps} — pense à finir bientôt)"
                     self.session.add_message("user",
                         f"Résultats :\n{combined_results}\n{error_hint}\n"
-                        "Continue. Code dans <tool name=\"write\">, JAMAIS dans le texte."
+                        f"Continue{step_hint}. Code dans <tool name=\"write\">, JAMAIS dans le texte."
                     )
             else:
                 # Pas de tool calls détectés
@@ -382,7 +432,6 @@ class Engine:
                     }))
                     self._running = False
                 else:
-                    # Envoyer le message de rappel approprié
                     nudge_idx = min(self._consecutive_no_tools - 1, len(NUDGE_MESSAGES) - 1)
                     nudge = NUDGE_MESSAGES[nudge_idx]
                     self.session.add_message("user", nudge)
@@ -454,6 +503,14 @@ class Engine:
         while self._running and self._step < self._max_steps:
             self._step += 1
 
+            # Après 25 étapes, forcer le modèle à conclure
+            if self._step == 25:
+                self.session.add_message("user",
+                    "⚠️ Tu as déjà fait 25 étapes. TERMINE maintenant. "
+                    "Vérifie que les fichiers principaux existent avec <tool name=\"tree\"> "
+                    "et lance le serveur si nécessaire. Puis dis TÂCHE TERMINÉE."
+                )
+
             try:
                 messages = self.session.get_messages_for_llm(
                     max_tokens=self.config["ollama"]["context_length"] - 2000
@@ -524,9 +581,12 @@ class Engine:
                     error_hint = ""
                     if had_errors:
                         error_hint = "\n⚠️ ERREURS — corrige avant de continuer."
+                    step_hint = ""
+                    if self._step >= 15:
+                        step_hint = f" (étape {self._step}/{self._max_steps} — pense à finir bientôt)"
                     self.session.add_message("user",
                         f"Résultats :\n{combined_results}\n{error_hint}\n"
-                        "Continue. Code dans <tool name=\"write\">, JAMAIS dans le texte."
+                        f"Continue{step_hint}. Code dans <tool name=\"write\">, JAMAIS dans le texte."
                     )
             elif task_done_stream:
                 self._running = False

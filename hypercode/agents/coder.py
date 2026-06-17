@@ -52,6 +52,7 @@ Utilise `todo` pour tracker. Puis commence avec les 1-2 premiers outils.
 ### FIN
 Quand TOUT est vérifié et fonctionne : TÂCHE TERMINÉE
 ⚠️ Ne dis JAMAIS TÂCHE TERMINÉE si des outils ont échoué ou si tu n'as pas vérifié.
+⚠️ Tu dois ABSOLUMENT dire TÂCHE TERMINÉE quand tu as fini. Ne continue pas indéfiniment.
 
 ## RÈGLES
 
@@ -80,6 +81,6 @@ class CoderAgent(Agent):
             "process", "docker", "database", "env", "ssh", "archive",
             "todo", "think", "clipboard",
         ],
-        temperature=0.7,
-        max_steps=80,
+        temperature=0.4,
+        max_steps=40,
     )
