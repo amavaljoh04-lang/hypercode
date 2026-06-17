@@ -28,6 +28,11 @@ class BashTool(Tool):
         """Exécute une commande shell."""
         cwd = working_dir or os.getcwd()
 
+        # Auto-detect background commands — use short timeout
+        bg_indicators = ['&', 'nohup ', 'disown', 'setsid']
+        if any(ind in command for ind in bg_indicators):
+            timeout = min(timeout, 5)
+
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -42,6 +47,12 @@ class BashTool(Tool):
                     process.communicate(), timeout=timeout
                 )
             except asyncio.TimeoutError:
+                # For background commands, timeout is normal — process keeps running
+                if any(ind in command for ind in ['&', 'nohup ']):
+                    return ToolResult(
+                        success=True,
+                        output="Processus lancé en arrière-plan.",
+                    )
                 process.kill()
                 return ToolResult(
                     success=False,
