@@ -37,10 +37,10 @@ class ProcessTool(Tool):
             return await self._list_processes(filter)
         elif action == "kill":
             return await self._kill_process(pid)
-        elif action == "background":
+        elif action in ("background", "start", "run", "bg"):
             return await self._run_background(command)
         else:
-            return ToolResult(success=False, output="", error=f"Action inconnue: {action}")
+            return ToolResult(success=False, output="", error=f"Action inconnue: {action}. Utilise: list, kill, background")
 
     async def _list_processes(self, proc_filter: str = None) -> ToolResult:
         cmd = "ps aux --sort=-%mem"

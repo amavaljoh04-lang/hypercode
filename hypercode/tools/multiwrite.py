@@ -29,7 +29,7 @@ class MultiWriteTool(Tool):
 
         for file_info in files:
             if isinstance(file_info, dict):
-                path = file_info.get("path", "")
+                path = file_info.get("path", "") or file_info.get("file_path", "")
                 content = file_info.get("content", "")
             else:
                 errors.append(f"Format invalide: {file_info}")
