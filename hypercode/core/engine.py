@@ -19,8 +19,7 @@ TOOL_INSTRUCTIONS_TEMPLATE = (
 )
 
 NUDGE_MESSAGES = [
-    "Utilise <tool> MAINTENANT ou dis TÂCHE TERMINÉE.",
-    '<tool name="bash">{"command": "ls"}</tool> — ce format. Ou TÂCHE TERMINÉE.',
+    "Rappel: utilise <tool> pour agir. Ou dis TÂCHE TERMINÉE si tout est fait.",
 ]
 
 
@@ -286,12 +285,13 @@ class Engine:
         self._step = 0
         self._max_steps = 30
         self._consecutive_no_tools = 0
-        self._max_no_tools = len(NUDGE_MESSAGES) + 1
-        self._files_written = set()  # Track files already created
-        self._repeated_writes = 0  # Detect write loops
-        self._recent_commands = []  # Track last N commands for loop detection
-        self._last_error = ""  # Track last error traceback for context
-        self._consecutive_blocks = 0  # Count consecutive blocked tool calls
+        self._max_no_tools = 2
+        self._files_written = set()
+        self._repeated_writes = 0
+        self._recent_commands = []
+        self._last_error = ""
+        self._consecutive_blocks = 0
+        self._last_tool_sigs = []  # Track consecutive identical calls (doom loop)
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -363,47 +363,6 @@ class Engine:
                 had_errors = False
                 critical_tools = {"write", "multiwrite", "bash", "edit", "patch", "replace"}
 
-                # Track writes for loop detection
-                new_files = set()
-                for tc in tool_calls:
-                    if tc.name in ("write", "multiwrite"):
-                        fp = tc.arguments.get("file_path", "")
-                        if fp:
-                            new_files.add(fp)
-                        for f in tc.arguments.get("files", []):
-                            if isinstance(f, dict):
-                                new_files.add(f.get("path", "") or f.get("file_path", ""))
-
-                # Detect repeated writes — ANY file rewritten = loop
-                rewritten = new_files & self._files_written
-                if rewritten:
-                    self._repeated_writes += 1
-                self._files_written.update(new_files)
-
-                # General loop detection — track command signatures
-                cmd_sigs = []
-                for tc in tool_calls:
-                    if tc.name == "bash":
-                        cmd_sigs.append(f"bash:{tc.arguments.get('command', '')}")
-                    elif tc.name == "read":
-                        cmd_sigs.append(f"read:{tc.arguments.get('file_path', '')}")
-                    elif tc.name == "write":
-                        cmd_sigs.append(f"write:{tc.arguments.get('file_path', '')}")
-                    else:
-                        cmd_sigs.append(f"{tc.name}:{str(tc.arguments)[:80]}")
-                self._recent_commands.extend(cmd_sigs)
-                # Keep last 20
-                self._recent_commands = self._recent_commands[-20:]
-
-                # Detect if same command repeated 2+ times in last 6 commands
-                _is_cmd_loop = False
-                if len(self._recent_commands) >= 4:
-                    last_6 = self._recent_commands[-6:]
-                    from collections import Counter
-                    counts = Counter(last_6)
-                    if counts.most_common(1)[0][1] >= 3:
-                        _is_cmd_loop = True
-
                 for tool_call in tool_calls:
                     if had_errors and tool_call.name in critical_tools:
                         skip_msg = f"[IGNORÉ] {tool_call.name}"
@@ -415,43 +374,16 @@ class Engine:
                         }))
                         continue
 
-                    # HARD SKIP: block repeated reads/bash on same target
+                    # DOOM LOOP: block if same tool+args called 3x consecutively
                     tc_sig = self._get_tool_sig(tool_call)
                     if self._should_block_loop(tc_sig, tool_call):
                         self._consecutive_blocks += 1
-                        fp = (tool_call.arguments.get("file_path", "") or
-                              tool_call.arguments.get("command", ""))
-                        import re as _re_block
-                        _fp_match = _re_block.search(r'(/\S+\.\w+)', fp)
-                        target_file = _fp_match.group(1) if _fp_match else fp
-
-                        # After 3 blocks, inject file content so model can fix without reading
-                        if self._consecutive_blocks >= 3 and target_file and os.path.isfile(target_file):
-                            try:
-                                with open(target_file) as _f:
-                                    file_content = _f.read()
-                                block_msg = (
-                                    f"⛔ BLOQUÉ x{self._consecutive_blocks}. Voici le fichier:\n"
-                                    f"```\n{file_content}\n```\n"
-                                )
-                                if self._last_error:
-                                    block_msg += f"Erreur:\n{self._last_error[:300]}\n"
-                                block_msg += (
-                                    f'CORRIGE avec edit ou réécris TOUT avec write:\n'
-                                    f'<tool name="write">{{"file_path": "{target_file}", '
-                                    f'"content": "tout le code corrigé ici"}}</tool>'
-                                )
-                            except Exception:
-                                block_msg = f"⛔ BLOQUÉ. Utilise edit ou write pour corriger {target_file}."
-                        else:
-                            block_msg = f"⛔ BLOQUÉ. Tu boucles sur {tool_call.name}."
-                            if self._last_error:
-                                block_msg += f"\nErreur:\n{self._last_error[:300]}"
-                            block_msg += (
-                                f'\nCorrige avec edit:\n'
-                                f'<tool name="edit">{{"file_path": "{target_file}", '
-                                f'"old_text": "ligne exacte du bug", "new_text": "ligne corrigée"}}</tool>'
-                            )
+                        block_msg = (
+                            f"⛔ BOUCLE DÉTECTÉE ({tool_call.name} x3). "
+                            f"Fais une action DIFFÉRENTE ou dis TÂCHE TERMINÉE."
+                        )
+                        if self._last_error:
+                            block_msg += f"\nDernière erreur: {self._last_error[:200]}"
                         results.append(f"[{tool_call.name}] {block_msg}")
                         self.on_event(EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -506,10 +438,12 @@ class Engine:
                 elif task_done and had_errors:
                     combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"ERREURS:\n{combined_results}\nCorrige le prochain bug avec edit."
+                        f"Erreurs détectées:\n{combined_results}"
                     )
                 else:
-                    self._build_continue_message(had_errors, _is_cmd_loop, results)
+                    # OpenCode pattern: just feed results, no "Continue" noise
+                    combined_results = _truncate_results(results)
+                    self.session.add_message("user", combined_results)
             else:
                 if task_done:
                     self._running = False
@@ -538,65 +472,18 @@ class Engine:
         self.session.save()
         return final_response
 
-    def _build_continue_message(self, had_errors: bool, is_cmd_loop: bool, results: list):
-        """Build the continue message based on loop detection state."""
-        import re as _re
-        from collections import Counter as _C
-
-        if self._repeated_writes >= 2:
-            self.session.add_message("user",
-                "⛔ STOP. Fichiers déjà bons. Lance serveur/teste ou TÂCHE TERMINÉE.")
-            return
-
-        if is_cmd_loop and had_errors:
-            _counts = _C(self._recent_commands[-6:])
-            _mc = _counts.most_common(1)
-            top_cmd = _mc[0][0] if _mc else ""
-            failing_file = ""
-            if "bash:" in top_cmd:
-                _m = _re.search(r'(/\S+\.\w+)', top_cmd)
-                if _m:
-                    failing_file = _m.group(1)
-            if failing_file:
-                self.session.add_message("user",
-                    f'⚠️ Le script crash. CORRIGE le bug avec edit AVANT de relancer:\n'
-                    f'<tool name="edit">{{"file_path": "{failing_file}", '
-                    f'"old_text": "ligne exacte du bug", "new_text": "ligne corrigée"}}</tool>\n'
-                    f'NE RELANCE PAS avant edit.')
-            else:
-                self.session.add_message("user",
-                    "⚠️ BOUCLE + erreur. Utilise edit pour corriger AVANT de relancer.")
-            return
-
-        if is_cmd_loop:
-            _counts = _C(self._recent_commands[-6:])
-            _mc = _counts.most_common(1)
-            top_cmd = _mc[0][0] if _mc else ""
-            looped_target = top_cmd.split(":", 1)[1].strip() if ":" in top_cmd else ""
-            if looped_target and ("read" in top_cmd or "bash:cat" in top_cmd):
-                self.session.add_message("user",
-                    f'⚠️ BOUCLE lecture. CORRIGE:\n'
-                    f'<tool name="edit">{{"file_path": "{looped_target}", '
-                    f'"old_text": "bug", "new_text": "fix"}}</tool>')
-            else:
-                self.session.add_message("user",
-                    "⚠️ BOUCLE. Action DIFFÉRENTE ou TÂCHE TERMINÉE.")
-            return
-
-        if self._repeated_writes >= 1:
-            self.session.add_message("user",
-                "Fichier déjà écrit. Passe à l'étape suivante.")
-            return
-
-        combined_results = _truncate_results(results)
-        msg = f"OK:\n{combined_results}"
-        if had_errors:
-            msg += "\nCorrige le bug avec edit puis relance."
-        else:
-            msg += "\nContinue."
-        if self._step >= 20:
-            msg += f"\n[{self._step}/{self._max_steps}] FINIS."
-        self.session.add_message("user", msg)
+    def _check_doom_loop(self, tool_call: "ToolCall") -> bool:
+        """OpenCode-style doom loop: block if same tool+args called 3+ times consecutively."""
+        tc_sig = self._get_tool_sig(tool_call)
+        self._last_tool_sigs.append(tc_sig)
+        # Keep last 6
+        self._last_tool_sigs = self._last_tool_sigs[-6:]
+        # Check if last 3 are identical
+        if len(self._last_tool_sigs) >= 3:
+            last3 = self._last_tool_sigs[-3:]
+            if last3[0] == last3[1] == last3[2]:
+                return True
+        return False
 
     def _get_tool_sig(self, tool_call: "ToolCall") -> str:
         """Get a signature string for a tool call."""
@@ -609,30 +496,14 @@ class Engine:
         return f"{tool_call.name}:{str(tool_call.arguments)[:80]}"
 
     def _should_block_loop(self, tc_sig: str, tool_call: "ToolCall") -> bool:
-        """Return True if this tool call should be blocked due to looping."""
-        if len(self._recent_commands) < 4:
-            return False
-        last_8 = self._recent_commands[-8:]
-        count = sum(1 for c in last_8 if c == tc_sig)
-        # Block reads on same file after 2+ reads
-        if tool_call.name == "read" and count >= 2:
-            return True
-        # Block bash cat on same file after 2+ times
-        if tool_call.name == "bash" and "cat " in tc_sig and count >= 2:
-            return True
-        # Block bash running same failing command 3+ times
-        if tool_call.name == "bash" and count >= 3:
-            return True
-        # Block writes on same file after 2+ writes
-        if tool_call.name == "write" and count >= 2:
-            return True
-        return False
+        """Return True if this tool call should be blocked (doom loop detected)."""
+        return self._check_doom_loop(tool_call)
 
     def _clear_loop_history_for_file(self, file_path: str):
         """Clear loop history after a successful edit so the file can be re-read."""
-        self._recent_commands = [
-            c for c in self._recent_commands
-            if file_path not in c
+        self._last_tool_sigs = [
+            s for s in self._last_tool_sigs
+            if file_path not in s
         ]
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
@@ -689,7 +560,6 @@ class Engine:
         while self._running and self._step < self._max_steps:
             self._step += 1
 
-            # Après 25 étapes, forcer le modèle à conclure
             if self._step == 25:
                 self.session.add_message("user",
                     "STOP. Vérifie et dis TÂCHE TERMINÉE maintenant."
@@ -727,44 +597,6 @@ class Engine:
                 had_errors = False
                 critical_tools = {"write", "multiwrite", "bash", "edit", "patch", "replace"}
 
-                # Track writes for loop detection
-                new_files = set()
-                for tc in tool_calls:
-                    if tc.name in ("write", "multiwrite"):
-                        fp = tc.arguments.get("file_path", "")
-                        if fp:
-                            new_files.add(fp)
-                        for f in tc.arguments.get("files", []):
-                            if isinstance(f, dict):
-                                new_files.add(f.get("path", "") or f.get("file_path", ""))
-
-                rewritten = new_files & self._files_written
-                if rewritten:
-                    self._repeated_writes += 1
-                self._files_written.update(new_files)
-
-                # General loop detection — track command signatures
-                cmd_sigs = []
-                for tc in tool_calls:
-                    if tc.name == "bash":
-                        cmd_sigs.append(f"bash:{tc.arguments.get('command', '')}")
-                    elif tc.name == "read":
-                        cmd_sigs.append(f"read:{tc.arguments.get('file_path', '')}")
-                    elif tc.name == "write":
-                        cmd_sigs.append(f"write:{tc.arguments.get('file_path', '')}")
-                    else:
-                        cmd_sigs.append(f"{tc.name}:{str(tc.arguments)[:80]}")
-                self._recent_commands.extend(cmd_sigs)
-                self._recent_commands = self._recent_commands[-20:]
-
-                _is_cmd_loop = False
-                if len(self._recent_commands) >= 4:
-                    last_6 = self._recent_commands[-6:]
-                    from collections import Counter
-                    counts = Counter(last_6)
-                    if counts.most_common(1)[0][1] >= 3:
-                        _is_cmd_loop = True
-
                 for tool_call in tool_calls:
                     if had_errors and tool_call.name in critical_tools:
                         skip_msg = f"[IGNORÉ] {tool_call.name}"
@@ -776,41 +608,16 @@ class Engine:
                         })
                         continue
 
-                    # HARD SKIP: block repeated reads/bash on same target
+                    # DOOM LOOP detection
                     tc_sig = self._get_tool_sig(tool_call)
                     if self._should_block_loop(tc_sig, tool_call):
                         self._consecutive_blocks += 1
-                        fp2 = (tool_call.arguments.get("file_path", "") or
-                               tool_call.arguments.get("command", ""))
-                        import re as _re_b2
-                        _fp_m2 = _re_b2.search(r'(/\S+\.\w+)', fp2)
-                        tf2 = _fp_m2.group(1) if _fp_m2 else fp2
-                        if self._consecutive_blocks >= 3 and tf2 and os.path.isfile(tf2):
-                            try:
-                                with open(tf2) as _f2:
-                                    fc2 = _f2.read()
-                                block_msg = (
-                                    f"⛔ BLOQUÉ x{self._consecutive_blocks}. Voici le fichier:\n"
-                                    f"```\n{fc2}\n```\n"
-                                )
-                                if self._last_error:
-                                    block_msg += f"Erreur:\n{self._last_error[:300]}\n"
-                                block_msg += (
-                                    f'CORRIGE avec edit ou réécris TOUT avec write:\n'
-                                    f'<tool name="write">{{"file_path": "{tf2}", '
-                                    f'"content": "tout le code corrigé ici"}}</tool>'
-                                )
-                            except Exception:
-                                block_msg = f"⛔ BLOQUÉ. Utilise edit ou write."
-                        else:
-                            block_msg = f"⛔ BLOQUÉ. Tu boucles sur {tool_call.name}."
-                            if self._last_error:
-                                block_msg += f"\nErreur:\n{self._last_error[:300]}"
-                            block_msg += (
-                                f'\nCorrige avec edit:\n'
-                                f'<tool name="edit">{{"file_path": "{tf2}", '
-                                f'"old_text": "ligne du bug", "new_text": "ligne corrigée"}}</tool>'
-                            )
+                        block_msg = (
+                            f"⛔ BOUCLE DÉTECTÉE ({tool_call.name} x3). "
+                            f"Fais une action DIFFÉRENTE ou dis TÂCHE TERMINÉE."
+                        )
+                        if self._last_error:
+                            block_msg += f"\nDernière erreur: {self._last_error[:200]}"
                         results.append(f"[{tool_call.name}] {block_msg}")
                         yield EngineEvent("tool_result", {
                             "name": tool_call.name,
@@ -839,20 +646,19 @@ class Engine:
                             self._clear_loop_history_for_file(fp)
                         if fp and fp.endswith(".py"):
                             try:
-                                import asyncio as _aio2
-                                proc = await _aio2.create_subprocess_shell(
+                                proc = await asyncio.create_subprocess_shell(
                                     f"python3 {fp}",
-                                    stdout=_aio2.subprocess.PIPE,
-                                    stderr=_aio2.subprocess.PIPE,
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
                                     cwd=self.session.working_dir or os.path.dirname(fp),
                                 )
-                                stdout, stderr = await _aio2.wait_for(proc.communicate(), timeout=10)
+                                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
                                 auto_out = (stdout or b"").decode()[:500]
                                 auto_err = (stderr or b"").decode()[:500]
                                 if proc.returncode == 0:
-                                    ar = f"[auto-test] python3 OK:\n{auto_out}"
+                                    ar = f"[auto-test] OK:\n{auto_out}"
                                 else:
-                                    ar = f"[auto-test] python3 ERREUR:\n{auto_err}"
+                                    ar = f"[auto-test] ERREUR:\n{auto_err}"
                                 results.append(ar)
                                 yield EngineEvent("tool_result", {
                                     "name": "bash",
@@ -872,10 +678,12 @@ class Engine:
                 elif task_done_stream and had_errors:
                     combined_results = _truncate_results(results)
                     self.session.add_message("user",
-                        f"ERREURS:\n{combined_results}\nCorrige le prochain bug avec edit."
+                        f"Erreurs détectées:\n{combined_results}"
                     )
                 else:
-                    self._build_continue_message(had_errors, _is_cmd_loop, results)
+                    # Just feed results back — no "Continue" noise
+                    combined_results = _truncate_results(results)
+                    self.session.add_message("user", combined_results)
             elif task_done_stream:
                 self._running = False
             else:
@@ -884,8 +692,7 @@ class Engine:
                     yield EngineEvent("error", {"message": "Agent ne répond plus."})
                     self._running = False
                 else:
-                    nudge_idx = min(self._consecutive_no_tools - 1, len(NUDGE_MESSAGES) - 1)
-                    self.session.add_message("user", NUDGE_MESSAGES[nudge_idx])
+                    self.session.add_message("user", NUDGE_MESSAGES[0])
 
         yield EngineEvent("done", {"total_steps": self._step})
         self.session.save()
