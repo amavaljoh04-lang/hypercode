@@ -283,11 +283,12 @@ class Engine:
 
         self._running = False
         self._step = 0
-        self._max_steps = 40
+        self._max_steps = 30
         self._consecutive_no_tools = 0
         self._max_no_tools = len(NUDGE_MESSAGES) + 1
         self._files_written = set()  # Track files already created
         self._repeated_writes = 0  # Detect write loops
+        self._recent_commands = []  # Track last N commands for loop detection
 
     async def run(self, user_message: str, working_dir: str = "") -> str:
         """Exécute une conversation complète avec l'agent."""
@@ -377,6 +378,30 @@ class Engine:
                     self._repeated_writes = 0
                     self._files_written.update(new_files)
 
+                # General loop detection — track command signatures
+                cmd_sigs = []
+                for tc in tool_calls:
+                    if tc.name == "bash":
+                        cmd_sigs.append(f"bash:{tc.arguments.get('command', '')}")
+                    elif tc.name == "read":
+                        cmd_sigs.append(f"read:{tc.arguments.get('file_path', '')}")
+                    elif tc.name == "write":
+                        cmd_sigs.append(f"write:{tc.arguments.get('file_path', '')}")
+                    else:
+                        cmd_sigs.append(f"{tc.name}:{str(tc.arguments)[:80]}")
+                self._recent_commands.extend(cmd_sigs)
+                # Keep last 20
+                self._recent_commands = self._recent_commands[-20:]
+
+                # Detect if same command repeated 2+ times in last 6 commands
+                _is_cmd_loop = False
+                if len(self._recent_commands) >= 4:
+                    last_6 = self._recent_commands[-6:]
+                    from collections import Counter
+                    counts = Counter(last_6)
+                    if counts.most_common(1)[0][1] >= 3:
+                        _is_cmd_loop = True
+
                 for tool_call in tool_calls:
                     if had_errors and tool_call.name in critical_tools:
                         skip_msg = f"[IGNORÉ] {tool_call.name}"
@@ -406,6 +431,8 @@ class Engine:
                     msg = f"OK:\n{combined_results}"
                     if had_errors:
                         msg += "\nCorrige l'erreur."
+                    elif _is_cmd_loop:
+                        msg += "\nBOUCLE DÉTECTÉE. Tu répètes la même action. Fais quelque chose de DIFFÉRENT: edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE."
                     elif self._repeated_writes >= 1:
                         msg += "\nFichiers déjà créés. STOP réécriture. Lance le serveur ou vérifie. Puis TÂCHE TERMINÉE."
                     else:
@@ -550,6 +577,28 @@ class Engine:
                     self._repeated_writes = 0
                     self._files_written.update(new_files)
 
+                # General loop detection — track command signatures
+                cmd_sigs = []
+                for tc in tool_calls:
+                    if tc.name == "bash":
+                        cmd_sigs.append(f"bash:{tc.arguments.get('command', '')}")
+                    elif tc.name == "read":
+                        cmd_sigs.append(f"read:{tc.arguments.get('file_path', '')}")
+                    elif tc.name == "write":
+                        cmd_sigs.append(f"write:{tc.arguments.get('file_path', '')}")
+                    else:
+                        cmd_sigs.append(f"{tc.name}:{str(tc.arguments)[:80]}")
+                self._recent_commands.extend(cmd_sigs)
+                self._recent_commands = self._recent_commands[-20:]
+
+                _is_cmd_loop = False
+                if len(self._recent_commands) >= 4:
+                    last_6 = self._recent_commands[-6:]
+                    from collections import Counter
+                    counts = Counter(last_6)
+                    if counts.most_common(1)[0][1] >= 3:
+                        _is_cmd_loop = True
+
                 for tool_call in tool_calls:
                     if had_errors and tool_call.name in critical_tools:
                         skip_msg = f"[IGNORÉ] {tool_call.name}"
@@ -588,6 +637,8 @@ class Engine:
                     msg = f"OK:\n{combined_results}"
                     if had_errors:
                         msg += "\nCorrige l'erreur."
+                    elif _is_cmd_loop:
+                        msg += "\nBOUCLE DÉTECTÉE. Tu répètes la même action. Fais quelque chose de DIFFÉRENT: edit pour corriger, bash pour exécuter, ou TÂCHE TERMINÉE."
                     elif self._repeated_writes >= 1:
                         msg += "\nFichiers déjà créés. STOP réécriture. Lance le serveur ou vérifie. Puis TÂCHE TERMINÉE."
                     else:
